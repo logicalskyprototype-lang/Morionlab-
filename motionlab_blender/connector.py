@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import queue
 import threading
-import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -23,9 +22,16 @@ class ConnectorError(RuntimeError):
 class ConnectorClient:
     def __init__(self, base_url, token, timeout=10):
         parsed = urlparse(base_url)
-        if parsed.scheme != "https" or not parsed.netloc:
-            raise ValueError("MotionLab service URL must use HTTPS.")
-        if not token or not isinstance(token, str):
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("MotionLab service URL must be a clean HTTPS URL.")
+        if not isinstance(token, str) or not token.strip():
             raise ValueError("A non-empty access token is required.")
         self.base_url = base_url.rstrip("/")
         self.token = token
@@ -61,14 +67,20 @@ class ConnectorClient:
 
     def fetch_next_job(self):
         payload = self._request("GET", "/v1/jobs/next")
-        if payload is None or payload.get("job") is None:
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise ConnectorError("MotionLab service returned an invalid response.")
+        raw_job = payload.get("job")
+        if raw_job is None:
             return None
         try:
-            return validate_job(payload["job"])
-        except (AttributeError, ProtocolError) as exc:
+            return validate_job(raw_job)
+        except ProtocolError as exc:
             raise ConnectorError("MotionLab service returned an invalid job.") from exc
 
     def submit_result(self, job_id, result):
+        # validate_job constrains IDs to URL-safe characters before they reach this path.
         return self._request(
             "POST",
             "/v1/jobs/{}/result".format(job_id),
@@ -102,6 +114,8 @@ class NetworkWorker:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=timeout)
+            return not self._thread.is_alive()
+        return True
 
     def submit_result(self, job_id, result):
         self._results.put((job_id, result))
@@ -114,7 +128,7 @@ class NetworkWorker:
                 if job is not None:
                     self.on_job(job)
             except ConnectorError:
-                # Retry on the next poll. The add-on can expose status in a later UI iteration.
+                # Retry on the next poll. A later UI iteration will expose status.
                 pass
             self._stop.wait(self.poll_interval)
 
@@ -129,8 +143,7 @@ class NetworkWorker:
             try:
                 self.client.submit_result(job_id, result)
             except ConnectorError:
-                # Do not silently discard results on transient failures.
                 self._results.put((job_id, result))
-                return
-            finally:
                 self._results.task_done()
+                return
+            self._results.task_done()
