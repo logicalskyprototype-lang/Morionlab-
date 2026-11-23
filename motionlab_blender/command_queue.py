@@ -1,15 +1,22 @@
-"""Thread-safe handoff from the network worker to Blender's main thread."""
+"""Bounded, thread-safe handoff to Blender's main thread."""
 
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from typing import Any, Dict, Optional
 
 
 class CommandQueue:
-    def __init__(self) -> None:
-        self._queue: Queue = Queue()
+    def __init__(self, maxsize: int = 100) -> None:
+        if maxsize < 1:
+            raise ValueError("Command queue maxsize must be positive.")
+        self._queue: Queue = Queue(maxsize=maxsize)
 
-    def put(self, job: Dict[str, Any]) -> None:
-        self._queue.put(job)
+    def put(self, job: Dict[str, Any]) -> bool:
+        """Queue a job without blocking the network worker."""
+        try:
+            self._queue.put_nowait(job)
+            return True
+        except Full:
+            return False
 
     def get_nowait(self) -> Optional[Dict[str, Any]]:
         try:
