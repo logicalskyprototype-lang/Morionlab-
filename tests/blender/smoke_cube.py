@@ -1,4 +1,4 @@
-"""Run with blender --background --python tests/blender/smoke_cube.py."""
+"""Run with blender --background --python-exit-code 1 --python tests/blender/smoke_cube.py."""
 
 import os
 import sys
@@ -9,6 +9,7 @@ if ROOT not in sys.path:
 
 import bpy
 import motionlab_blender
+from motionlab_blender import addon as addon_runtime
 
 from motionlab_blender.protocol import validate_job
 from motionlab_blender.permissions import authorize_job
@@ -18,8 +19,15 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 
 # Verify the add-on package can register and unregister inside Blender itself.
 motionlab_blender.register()
-assert hasattr(bpy.types, "MOTIONLAB_OT_Connect")
+assert all(
+    bpy.utils.is_registered_class(cls)
+    for cls in addon_runtime._CLASSES
+), "MotionLab add-on classes were not registered"
 motionlab_blender.unregister()
+assert not any(
+    bpy.utils.is_registered_class(cls)
+    for cls in addon_runtime._CLASSES
+), "MotionLab add-on classes were not unregistered"
 
 job = validate_job({
     "id": "ci-cube-001",
