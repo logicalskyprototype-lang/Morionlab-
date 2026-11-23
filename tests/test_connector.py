@@ -22,3 +22,13 @@ def test_rejects_ambiguous_or_credential_bearing_urls(url):
 def test_requires_non_empty_token():
     with pytest.raises(ValueError):
         ConnectorClient("https://motionlab.example", " ")
+
+
+
+def test_redirect_handler_refuses_redirects():
+    from motionlab_blender.connector import _NoRedirectHandler
+
+    handler = _NoRedirectHandler()
+    assert handler.redirect_request(
+        None, None, 302, "Found", {}, "https://other.example/"
+    ) is None
