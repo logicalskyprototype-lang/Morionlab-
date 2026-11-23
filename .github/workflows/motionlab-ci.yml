@@ -49,7 +49,7 @@ jobs:
           tar -xf /tmp/blender.tar.xz -C "${{ runner.temp }}/blender" --strip-components=1
           echo "${{ runner.temp }}/blender" >> "$GITHUB_PATH"
       - name: Verify Blender version
-        run: blender --background --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string); assert bpy.app.version[:2] == (3, 6)"
+        run: blender --background --python-exit-code 1 --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string); assert bpy.app.version[:2] == (3, 6)"
       - name: Run Blender smoke test
-        run: blender --background --python tests/blender/smoke_cube.py
+        run: blender --background --python-exit-code 1 --python tests/blender/smoke_cube.py
 
