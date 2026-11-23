@@ -7,12 +7,19 @@ import queue
 import threading
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .protocol import ProtocolError, validate_job
 
 
 MAX_RESPONSE_BYTES = 256 * 1024
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Do not forward bearer credentials through HTTP redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class ConnectorError(RuntimeError):
@@ -51,7 +58,7 @@ class ConnectorClient:
             },
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with build_opener(_NoRedirectHandler).open(request, timeout=self.timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
         except (HTTPError, URLError, TimeoutError) as exc:
             raise ConnectorError("MotionLab service request failed.") from exc
