@@ -8,12 +8,18 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import bpy
+import motionlab_blender
 
 from motionlab_blender.protocol import validate_job
 from motionlab_blender.permissions import authorize_job
 from motionlab_blender.commands.objects import execute_command
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
+
+# Verify the add-on package can register and unregister inside Blender itself.
+motionlab_blender.register()
+assert hasattr(bpy.types, "MOTIONLAB_OT_Connect")
+motionlab_blender.unregister()
 
 job = validate_job({
     "id": "ci-cube-001",
@@ -30,4 +36,5 @@ assert len(bpy.context.scene.objects) == 1
 assert tuple(round(value, 3) for value in result["location"]) == (1.0, 2.0, 3.0)
 assert all(abs(value - 2.0) < 0.001 for value in result["dimensions"])
 
+print("MOTIONLAB_ADDON_REGISTRATION=PASS")
 print("MOTIONLAB_BLENDER_SMOKE_TEST=PASS")
