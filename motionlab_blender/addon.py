@@ -8,13 +8,15 @@ from .permissions import authorize_job
 from .protocol import ProtocolError
 from .commands.objects import execute_command
 
-_COMMANDS = CommandQueue()
+_COMMANDS = CommandQueue(maxsize=100)
 _WORKER = None
+_MAX_JOBS_PER_TICK = 10
 
 
 def _process_queue():
     global _WORKER
-    while True:
+    processed = 0
+    while processed < _MAX_JOBS_PER_TICK:
         job = _COMMANDS.get_nowait()
         if job is None:
             break
@@ -25,13 +27,24 @@ def _process_queue():
                 "status": "completed",
                 "output": execute_command(job),
             })
-        except (ProtocolError, RuntimeError, ValueError) as exc:
+        except Exception as exc:
+            # Keep one malformed or failed command from terminating the timer.
             result["error"] = str(exc)
         finally:
             if _WORKER is not None:
                 _WORKER.submit_result(job["id"], result)
             _COMMANDS.task_done()
-    return 0.25
+        processed += 1
+
+    # Yield promptly so a backlog cannot monopolize Blender's UI thread.
+    return 0.01 if not _COMMANDS.empty() else 0.25
+
+
+def _enqueue_job(job):
+    if not _COMMANDS.put(job):
+        # The server must retain/re-deliver leased jobs until their result arrives.
+        from .connector import ConnectorError
+        raise ConnectorError("Local command queue is full; job was not accepted.")
 
 
 class MOTIONLAB_Preferences(bpy.types.AddonPreferences):
@@ -76,7 +89,7 @@ class MOTIONLAB_OT_Connect(bpy.types.Operator):
             self.report({"ERROR"}, "Previous connection is still shutting down")
             return {"CANCELLED"}
 
-        _WORKER = NetworkWorker(client, _COMMANDS.put)
+        _WORKER = NetworkWorker(client, _enqueue_job)
         _WORKER.start()
         if not bpy.app.timers.is_registered(_process_queue):
             bpy.app.timers.register(_process_queue, first_interval=0.25)
