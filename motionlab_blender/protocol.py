@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Dict
 
 
@@ -10,11 +11,11 @@ class ProtocolError(ValueError):
     """Raised when a bridge message is malformed or unsafe."""
 
 
-MAX_COMMAND_ID_LENGTH = 128
 MAX_OBJECT_NAME_LENGTH = 64
 MAX_COORDINATE = 100_000.0
 MIN_CUBE_SIZE = 0.001
 MAX_CUBE_SIZE = 1_000.0
+_JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def _is_number(value: Any) -> bool:
@@ -31,10 +32,8 @@ def validate_job(job: Any) -> Dict[str, Any]:
     args = job.get("args", {})
     authorization = job.get("authorization")
 
-    if not isinstance(job_id, str) or not job_id.strip():
-        raise ProtocolError("Job id must be a non-empty string.")
-    if len(job_id) > MAX_COMMAND_ID_LENGTH:
-        raise ProtocolError("Job id is too long.")
+    if not isinstance(job_id, str) or not _JOB_ID_PATTERN.fullmatch(job_id):
+        raise ProtocolError("Job id must contain 1-128 letters, numbers, '_' or '-'.")
     if command != "create_cube":
         raise ProtocolError("Unsupported command.")
     if not isinstance(args, dict):
