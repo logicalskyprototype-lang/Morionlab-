@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,10 +33,30 @@ class Base(DeclarativeBase):
     pass
 
 
+class Workspace(Base):
+    __tablename__ = "motionlab_workspaces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkspaceCredential(Base):
+    __tablename__ = "motionlab_workspace_credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Job(Base):
     __tablename__ = "motionlab_jobs"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, default="wsp_legacy", index=True)
     command: Mapped[str] = mapped_column(String(64), nullable=False)
     args_json: Mapped[str] = mapped_column(Text, nullable=False)
     authorization_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -51,6 +71,7 @@ class Installation(Base):
     __tablename__ = "motionlab_installations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, default="wsp_legacy", index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -92,6 +113,7 @@ class AuditEvent(Base):
     actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
     target_type: Mapped[str] = mapped_column(String(32), nullable=False)
     target_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=True, index=True)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
@@ -113,6 +135,7 @@ def _record_audit(
     target_type: str,
     target_id: str,
     details: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     session.add(
         AuditEvent(
@@ -122,16 +145,32 @@ def _record_audit(
             actor_id=actor_id,
             target_type=target_type,
             target_id=target_id,
+            workspace_id=workspace_id,
             details_json=json.dumps(details or {}, separators=(",", ":"), sort_keys=True),
             created_at=_utcnow(),
         )
     )
 
 
+class WorkspaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Workspace name must contain 1-100 characters.")
+        return value
+
+
 class InstallationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    workspace_id: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -325,6 +364,20 @@ def create_app(
     if initialize_schema:
         Base.metadata.create_all(engine)
 
+    # Development/test databases created directly from metadata still need the
+    # explicit single-tenant adoption workspace used by the Alembic migration.
+    with SessionLocal() as bootstrap_session:
+        if bootstrap_session.get(Workspace, "wsp_legacy") is None:
+            bootstrap_session.add(
+                Workspace(
+                    id="wsp_legacy",
+                    name="Legacy workspace",
+                    status="active",
+                    created_at=_utcnow(),
+                )
+            )
+            bootstrap_session.commit()
+
     app = FastAPI(title="MotionLab Job API", version="0.2.0")
 
     app.state.rate_limit_cleanup_counter = 0
@@ -345,6 +398,13 @@ def create_app(
                             Installation.revoked_at.is_(None),
                         )
                     ) is not None
+                    if not valid_credential:
+                        valid_credential = auth_session.scalar(
+                            select(WorkspaceCredential.id).where(
+                                WorkspaceCredential.token_hash == _token_hash(supplied),
+                                WorkspaceCredential.revoked_at.is_(None),
+                            )
+                        ) is not None
             except SQLAlchemyError:
                 return JSONResponse(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -447,7 +507,29 @@ def create_app(
         )
         if installation is None or installation.revoked_at is not None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid add-on credentials.")
+        workspace = session.get(Workspace, installation.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Installation workspace is not active.")
         return installation.id
+
+    def require_workspace(
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_session),
+    ):
+        supplied = _bearer_token(authorization)
+        if not supplied:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid workspace credentials.")
+        credential = session.scalar(
+            select(WorkspaceCredential).where(
+                WorkspaceCredential.token_hash == _token_hash(supplied)
+            )
+        )
+        if credential is None or credential.revoked_at is not None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid workspace credentials.")
+        workspace = session.get(Workspace, credential.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active.")
+        return workspace
 
     @app.get("/healthz")
     def health():
