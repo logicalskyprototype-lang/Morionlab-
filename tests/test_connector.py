@@ -51,3 +51,33 @@ def test_worker_result_queue_is_bounded():
         assert worker.submit_result("job-{}".format(index), {"status": "completed"})
     assert not worker.can_accept_result()
     assert worker.submit_result("overflow", {"status": "completed"}) is False
+
+
+class _FlakyResultClient:
+    def __init__(self):
+        self.attempts = []
+
+    def submit_result(self, job_id, result):
+        self.attempts.append((job_id, result))
+        if len(self.attempts) == 1:
+            from motionlab_blender.connector import ConnectorError
+            raise ConnectorError("temporary failure")
+        return {"accepted": True}
+
+
+def test_failed_result_submission_is_retained_and_retried():
+    client = _FlakyResultClient()
+    worker = NetworkWorker(client, lambda job: None)
+    result = {"status": "completed"}
+
+    assert worker.submit_result("job-retry", result) is True
+    worker._flush_results()
+
+    # Failed delivery must block more scene work until retry succeeds.
+    assert worker.can_accept_result() is False
+    worker._flush_results()
+
+    assert len(client.attempts) == 2
+    assert client.attempts[0] == ("job-retry", result)
+    assert client.attempts[1] == ("job-retry", result)
+    assert worker.can_accept_result() is True
