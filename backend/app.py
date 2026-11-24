@@ -166,6 +166,20 @@ class WorkspaceRequest(BaseModel):
         return value
 
 
+class WorkspaceInstallationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Installation name must contain 1-100 characters.")
+        return value
+
+
 class InstallationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -744,6 +758,80 @@ def create_app(
                 for event in events
             ]
         }
+
+    @app.post("/v1/workspaces/installations", status_code=status.HTTP_201_CREATED)
+    def create_workspace_installation(
+        payload: WorkspaceInstallationRequest,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installation_id = "ins_" + uuid.uuid4().hex
+        access_token = secrets.token_urlsafe(32)
+        installation = Installation(
+            id=installation_id, workspace_id=workspace.id, name=payload.name,
+            token_hash=_token_hash(access_token), created_at=_utcnow(),
+        )
+        session.add(installation)
+        session.add(WorkerLease(installation_id=installation_id))
+        _record_audit(
+            session, event_type="installation.created", actor_type="workspace",
+            actor_id=workspace.id, target_type="installation", target_id=installation_id,
+            details={"name": payload.name}, workspace_id=workspace.id,
+        )
+        session.commit()
+        return {"installation_id": installation_id, "access_token": access_token}
+
+    @app.get("/v1/workspaces/installations")
+    def list_workspace_installations(
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installations = session.scalars(
+            select(Installation).where(Installation.workspace_id == workspace.id)
+            .order_by(Installation.created_at.desc(), Installation.id.desc())
+        ).all()
+        return {"installations": [
+            {"installation_id": item.id, "name": item.name,
+             "created_at": item.created_at.isoformat(),
+             "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None}
+            for item in installations
+        ]}
+
+    @app.post("/v1/workspaces/installations/{installation_id}/revoke")
+    def revoke_workspace_installation(
+        installation_id: str,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installation = session.get(Installation, installation_id)
+        if installation is None or installation.workspace_id != workspace.id:
+            raise HTTPException(status_code=404, detail="Unknown installation.")
+        if installation.revoked_at is not None:
+            return {"revoked": True}
+        installation.revoked_at = _utcnow()
+        assignments = session.scalars(
+            select(JobAssignment).where(JobAssignment.installation_id == installation_id)
+        ).all()
+        for assignment in assignments:
+            job = session.get(Job, assignment.job_id)
+            if job is not None and job.workspace_id == workspace.id and job.status in {"queued", "leased"}:
+                job.status = "queued"
+                job.lease_expires_at = None
+                grant = session.get(JobLeaseGrant, job.id)
+                if grant is not None:
+                    session.delete(grant)
+                session.delete(assignment)
+        lease = session.get(WorkerLease, installation_id)
+        if lease is not None:
+            lease.active_job_id = None
+            lease.lease_expires_at = None
+        _record_audit(
+            session, event_type="installation.revoked", actor_type="workspace",
+            actor_id=workspace.id, target_type="installation", target_id=installation_id,
+            workspace_id=workspace.id,
+        )
+        session.commit()
+        return {"revoked": True}
 
     @app.post("/v1/workspaces/jobs", status_code=status.HTTP_201_CREATED)
     def enqueue_workspace_job(
