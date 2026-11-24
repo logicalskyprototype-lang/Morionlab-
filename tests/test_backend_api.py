@@ -213,3 +213,19 @@ def test_expired_lease_cannot_acknowledge_job(tmp_path):
         headers=ADDON,
     )
     assert response.status_code == 409
+
+
+
+def test_extremely_large_numbers_are_rejected_without_server_error(tmp_path):
+    client, _ = client_for(tmp_path)
+    huge_integer = 10 ** 400
+    for args in (
+        {"size": huge_integer},
+        {"location": [0, huge_integer, 0]},
+    ):
+        response = client.post(
+            "/v1/admin/jobs",
+            json=approved_job(args=args),
+            headers=ADMIN,
+        )
+        assert response.status_code == 422
