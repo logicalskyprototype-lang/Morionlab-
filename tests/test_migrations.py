@@ -59,9 +59,10 @@ def test_workspace_migration_adopts_existing_legacy_rows_without_losing_data(tmp
             text(
                 "INSERT INTO motionlab_jobs "
                 "(id, command, args_json, authorization_json, status, lease_expires_at, attempts, result_json, created_at) "
-                "VALUES ('ml_existing', 'create_cube', '{}', '{\"approved\":true,\"scopes\":[\"scene.write\"]}', "
+                "VALUES ('ml_existing', 'create_cube', '{}', :authorization, "
                 "'queued', NULL, 0, NULL, CURRENT_TIMESTAMP)"
-            )
+            ),
+            {"authorization": '{"approved":true,"scopes":["scene.write"]}'},
         )
 
     try:
