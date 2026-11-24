@@ -13,6 +13,8 @@ from .protocol import ProtocolError, validate_job
 
 
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_PENDING_RESULTS = 100
+DEFAULT_REQUEST_TIMEOUT = 2.0
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -27,7 +29,7 @@ class ConnectorError(RuntimeError):
 
 
 class ConnectorClient:
-    def __init__(self, base_url, token, timeout=10):
+    def __init__(self, base_url, token, timeout=DEFAULT_REQUEST_TIMEOUT):
         parsed = urlparse(base_url)
         if (
             parsed.scheme != "https"
@@ -40,9 +42,11 @@ class ConnectorClient:
             raise ValueError("MotionLab service URL must be a clean HTTPS URL.")
         if not isinstance(token, str) or not token.strip():
             raise ValueError("A non-empty access token is required.")
+        if not isinstance(timeout, (int, float)) or timeout <= 0:
+            raise ValueError("Request timeout must be a positive number.")
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self.timeout = timeout
+        self.timeout = float(timeout)
 
     def _request(self, method, path, payload=None):
         body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -103,7 +107,8 @@ class NetworkWorker:
         self.on_job = on_job
         self.poll_interval = poll_interval
         self._stop = threading.Event()
-        self._results = queue.Queue()
+        self._results = queue.Queue(maxsize=MAX_PENDING_RESULTS)
+        self._retry_result = None
         self._thread = None
 
     def start(self):
@@ -117,40 +122,64 @@ class NetworkWorker:
         )
         self._thread.start()
 
-    def stop(self, timeout=2.0):
+    def stop(self, timeout=5.0):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=timeout)
             return not self._thread.is_alive()
         return True
 
+    def can_accept_result(self):
+        # A failed submission is held separately and blocks further scene work.
+        return self._retry_result is None and not self._results.full()
+
     def submit_result(self, job_id, result):
-        self._results.put((job_id, result))
+        try:
+            self._results.put_nowait((job_id, result))
+            return True
+        except queue.Full:
+            return False
 
     def _run(self):
         while not self._stop.is_set():
             self._flush_results()
-            try:
-                job = self.client.fetch_next_job()
-                if job is not None:
-                    self.on_job(job)
-            except ConnectorError:
-                # Retry on the next poll. A later UI iteration will expose status.
-                pass
+            if self._stop.is_set():
+                break
+
+            # Stop accepting work while result delivery is backlogged.
+            if self.can_accept_result():
+                try:
+                    job = self.client.fetch_next_job()
+                    if job is not None:
+                        self.on_job(job)
+                except ConnectorError:
+                    # Retry on the next poll. UI status reporting is a later increment.
+                    pass
+
             self._stop.wait(self.poll_interval)
 
-        self._flush_results()
-
     def _flush_results(self):
-        while True:
-            try:
-                job_id, result = self._results.get_nowait()
-            except queue.Empty:
-                return
+        while not self._stop.is_set():
+            if self._retry_result is not None:
+                item = self._retry_result
+                self._retry_result = None
+            else:
+                try:
+                    item = self._results.get_nowait()
+                except queue.Empty:
+                    return
+
+            job_id, result = item
             try:
                 self.client.submit_result(job_id, result)
             except ConnectorError:
-                self._results.put((job_id, result))
-                self._results.task_done()
+                # Retain the failed item without racing a concurrent queue producer.
+                self._retry_result = item
+                if item is not None and self._results.unfinished_tasks:
+                    # Balance task accounting only for items removed from the queue.
+                    pass
                 return
-            self._results.task_done()
+            else:
+                if self._retry_result is None and self._results.unfinished_tasks:
+                    # Queue task accounting is informational; no join() is used.
+                    pass
