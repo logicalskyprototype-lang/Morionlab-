@@ -259,6 +259,8 @@ def create_app(
             raise RuntimeError("Production requires PostgreSQL via the psycopg SQLAlchemy driver.")
     if initialize_schema is None:
         initialize_schema = not production and os.getenv("MOTIONLAB_SKIP_SCHEMA_INIT") != "1"
+    if production and initialize_schema:
+        raise RuntimeError("Production schema changes must be applied with Alembic, not create_all().")
     if lease_seconds < 5 or lease_seconds > 3600:
         raise ValueError("Lease duration must be between 5 and 3600 seconds.")
 
