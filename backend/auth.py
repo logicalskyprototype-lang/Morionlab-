@@ -308,6 +308,7 @@ def build_auth_router(
         if not consume_bucket(session, "verify-ip:" + client_host, 30, 3600):
             session.commit()
             raise HTTPException(status_code=429, detail="Too many verification attempts. Try again later.")
+        session.commit()
         challenge = session.scalar(
             select(MagicLinkChallenge)
             .where(MagicLinkChallenge.token_hash == token_hash(payload.token))
