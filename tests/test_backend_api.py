@@ -1,8 +1,6 @@
-import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 
-from backend.app import JobRequest, create_app
+from backend.app import create_app
 
 ADDON = {"Authorization": "Bearer addon-test-token"}
 ADMIN = {"Authorization": "Bearer admin-test-token"}
