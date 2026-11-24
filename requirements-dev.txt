@@ -4,3 +4,4 @@ uvicorn[standard]==0.34.2
 SQLAlchemy==2.0.40
 psycopg[binary]==3.2.9
 httpx==0.28.1
+Alembic==1.15.2
