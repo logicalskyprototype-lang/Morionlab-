@@ -485,7 +485,8 @@ def create_app(
         ):
             raise HTTPException(status_code=409, detail="Lease token is no longer valid for this job.")
 
-        result = payload.model_dump()
+        # Never persist the bearer lease token in the result record.
+        result = payload.model_dump(exclude={"lease_token"})
         if job.status in {"completed", "failed"}:
             original = json.loads(job.result_json)
             if original != result:
