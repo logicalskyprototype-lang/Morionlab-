@@ -1,9 +1,10 @@
 """Blender registration, save-gated result delivery and main-thread execution."""
 
 import bpy
+from bpy.app.handlers import persistent
 
 from .command_queue import CommandQueue
-from .connector import ConnectorClient, NetworkWorker
+from .connector import ConnectorClient, NetworkWorker, MAX_PENDING_RESULTS
 from .permissions import authorize_job
 from .commands.objects import execute_command
 
@@ -14,6 +15,7 @@ _PENDING_RESULTS = {}
 _SAVED_RESULTS = {}
 
 
+@persistent
 def _on_save_post(_unused):
     """Only results included in a completed .blend save may be acknowledged."""
     _SAVED_RESULTS.update(_PENDING_RESULTS)
@@ -43,6 +45,8 @@ def _process_queue():
         return 1.0
 
     while processed < _MAX_JOBS_PER_TICK:
+        if len(_PENDING_RESULTS) + len(_SAVED_RESULTS) >= MAX_PENDING_RESULTS:
+            break
         if _WORKER is not None and not _WORKER.can_accept_result():
             break
         job = _COMMANDS.get_nowait()
