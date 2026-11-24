@@ -558,6 +558,7 @@ def create_app(
             token_hash=_token_hash(access_token), created_at=_utcnow(),
         )
         session.add_all([workspace, credential])
+        session.flush()
         _record_audit(session, event_type="workspace.created", actor_type="admin", actor_id="admin",
             target_type="workspace", target_id=workspace_id, details={"name": payload.name},
             workspace_id=workspace_id)
