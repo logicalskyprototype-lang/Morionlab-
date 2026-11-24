@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#101216" />
+  <meta name="description" content="MotionLab is LogicalSky's creative engineering workspace for 3D, simulations and animation." />
+  <title>MotionLab · Creative Engineering</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/web/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" aria-label="MotionLab home" data-page="overview">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>motionlab</strong><small>CREATIVE ENGINEERING</small></span>
+      </a>
+      <div class="workspace-switcher">
+        <div class="workspace-avatar">L</div>
+        <div class="workspace-copy"><strong>LogicalSky Studio</strong><small>Personal workspace</small></div>
+        <span class="chevron">⌄</span>
+      </div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav class="main-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-page="overview"><span class="nav-icon">⌂</span><span>Overview</span></button>
+        <button class="nav-item" data-page="projects"><span class="nav-icon">▦</span><span>Projects</span><span class="nav-count">04</span></button>
+        <button class="nav-item" data-page="workspace"><span class="nav-icon">◫</span><span>Creative workspace</span></button>
+        <button class="nav-item" data-page="assets"><span class="nav-icon">◇</span><span>Asset library</span></button>
+      </nav>
+      <div class="nav-label tools-label">CREATE</div>
+      <nav class="main-nav" aria-label="Creative tools">
+        <button class="nav-item" data-page="experiments"><span class="nav-icon">⌘</span><span>Experiments</span><span class="nav-dot"></span></button>
+        <button class="nav-item" data-page="animation"><span class="nav-icon">◷</span><span>Animation</span></button>
+        <button class="nav-item" data-page="ai-tools"><span class="nav-icon">✳</span><span>AI studio</span><span class="soon">SOON</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection-card">
+          <div class="connection-head"><span class="status-dot"></span><span>Execution status</span></div>
+          <strong>Not connected</strong>
+          <p>Connect Blender to start running scenes on your machine.</p>
+          <button class="text-action" data-page="connections">Manage connections <span>↗</span></button>
+        </div>
+        <button class="nav-item bottom-item" data-page="settings"><span class="nav-icon">⚙</span><span>Settings</span></button>
+        <div class="profile">
+          <div class="profile-avatar">H</div>
+          <div class="profile-copy"><strong>Studio owner</strong><small>Personal account</small></div>
+          <span class="profile-menu">•••</span>
+        </div>
+      </div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation">☰</button>
+        <div class="breadcrumbs"><span>Workspace</span><b>/</b><strong id="breadcrumb-current">Overview</strong></div>
+        <div class="topbar-actions">
+          <div class="system-status"><span class="status-dot"></span> All systems operational</div>
+          <button class="icon-button" aria-label="Notifications">♧<i></i></button>
+          <div class="top-avatar">H</div>
+        </div>
+      </header>
+      <section id="page-content" class="page-content" aria-live="polite"></section>
+      <footer class="app-footer"><span>MotionLab <b>·</b> Creative Engineering Environment</span><span>Built by LogicalSky</span></footer>
+    </main>
+  </div>
+  <div id="modal-root"></div>
+  <script type="module" src="/web/app.js"></script>
+</body>
+</html>
