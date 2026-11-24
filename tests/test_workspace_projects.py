@@ -32,7 +32,6 @@ def test_workspace_project_create_list_get_update_and_archive(tmp_path):
     assert created.status_code == 201, created.text
     project = created.json()["project"]
     assert project["id"].startswith("prj_")
-    assert project["workspace_id"] if "workspace_id" in project else True
     assert project["name"] == "Product concept"
     assert project["description"] == "First prototype"
     assert project["project_type"] == "experiment"
@@ -134,6 +133,11 @@ def test_project_validation_and_pagination_bounds(tmp_path):
         f"/v1/workspaces/projects/{project['id']}",
         headers=token,
         json={"status": "deleted"},
+    ).status_code == 422
+    assert client.patch(
+        f"/v1/workspaces/projects/{project['id']}",
+        headers=token,
+        json={"status": None},
     ).status_code == 422
     assert client.get(
         "/v1/workspaces/projects?limit=101", headers=token
