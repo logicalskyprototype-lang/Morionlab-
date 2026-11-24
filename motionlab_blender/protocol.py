@@ -31,6 +31,7 @@ def validate_job(job: Any) -> Dict[str, Any]:
     command = job.get("command")
     args = job.get("args", {})
     authorization = job.get("authorization")
+    lease_token = job.get("lease_token")
 
     if not isinstance(job_id, str) or not _JOB_ID_PATTERN.fullmatch(job_id):
         raise ProtocolError("Job id must contain 1-128 letters, numbers, '_' or '-'.")
@@ -40,6 +41,8 @@ def validate_job(job: Any) -> Dict[str, Any]:
         raise ProtocolError("Command args must be an object.")
     if not isinstance(authorization, dict):
         raise ProtocolError("Authorization metadata is required.")
+    if not isinstance(lease_token, str) or not lease_token or len(lease_token) > 128:
+        raise ProtocolError("A valid lease token is required.")
 
     name = args.get("name", "MotionLab Cube")
     size = args.get("size", 2.0)
@@ -70,4 +73,5 @@ def validate_job(job: Any) -> Dict[str, Any]:
             "location": [float(axis) for axis in location],
         },
         "authorization": authorization,
+        "lease_token": lease_token,
     }
