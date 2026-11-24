@@ -30,9 +30,10 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_job_lease_grants",
             "motionlab_rate_limit_buckets",
             "motionlab_audit_events",
+            "motionlab_projects",
         }.issubset(tables)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_workspace_authorization"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workspace_projects"
             assert connection.execute(
                 text("SELECT status FROM motionlab_workspaces WHERE id = 'wsp_legacy'")
             ).scalar_one() == "active"
@@ -77,7 +78,7 @@ def test_workspace_migration_adopts_existing_legacy_rows_without_losing_data(tmp
                 text("SELECT workspace_id FROM motionlab_jobs WHERE id = 'ml_existing'")
             ).scalar_one()
             assert job == "wsp_legacy"
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_workspace_authorization"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workspace_projects"
     finally:
         engine.dispose()
 

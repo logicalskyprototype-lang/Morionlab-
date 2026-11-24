@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -40,6 +40,24 @@ class Workspace(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+
+
+class Project(Base):
+    __tablename__ = "motionlab_projects"
+    __table_args__ = (
+        Index("ix_motionlab_projects_workspace_created", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_type: Mapped[str] = mapped_column(String(24), nullable=False, default="3d_scene")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WorkspaceCredential(Base):
@@ -164,6 +182,73 @@ class WorkspaceRequest(BaseModel):
         if not value or len(value) > 100:
             raise ValueError("Workspace name must contain 1-100 characters.")
         return value
+
+
+
+
+class ProjectCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str | None = Field(default=None, max_length=2000)
+    project_type: str = "3d_scene"
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Project name must contain 1-100 characters.")
+        return value
+
+    @field_validator("project_type")
+    @classmethod
+    def valid_project_type(cls, value: str) -> str:
+        if value not in {"3d_scene", "experiment", "animation"}:
+            raise ValueError("Unsupported project type.")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+
+class ProjectUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    status: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str | None) -> str | None:
+        if value is None:
+            raise ValueError("Project name cannot be null.")
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Project name must contain 1-100 characters.")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def valid_status(cls, value: str | None) -> str | None:
+        if value is None or value not in {"active", "archived"}:
+            raise ValueError("Project status must be active or archived.")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    def validate_patch(self) -> None:
+        if not self.model_fields_set:
+            raise ValueError("At least one project field must be supplied.")
 
 
 class WorkspaceInstallationRequest(BaseModel):
@@ -857,6 +942,124 @@ def create_app(
             workspace_id=workspace.id)
         session.commit()
         return {"id": job_id, "status": "queued", "installation_id": installation.id}
+
+    @app.post("/v1/workspaces/projects", status_code=status.HTTP_201_CREATED)
+    def create_workspace_project(
+        payload: ProjectCreateRequest,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        now = _utcnow()
+        project = Project(
+            id="prj_" + uuid.uuid4().hex,
+            workspace_id=workspace.id,
+            name=payload.name,
+            description=payload.description,
+            project_type=payload.project_type,
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(project)
+        _record_audit(
+            session, event_type="project.created", actor_type="workspace",
+            actor_id=workspace.id, target_type="project", target_id=project.id,
+            details={"name": project.name, "project_type": project.project_type},
+            workspace_id=workspace.id,
+        )
+        session.commit()
+        return {
+            "project": {
+                "id": project.id, "name": project.name,
+                "description": project.description, "project_type": project.project_type,
+                "status": project.status, "created_at": project.created_at.isoformat(),
+                "updated_at": project.updated_at.isoformat(),
+            }
+        }
+
+    @app.get("/v1/workspaces/projects")
+    def list_workspace_projects(
+        include_archived: bool = False,
+        limit: int = Query(default=50, ge=1, le=100),
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        statement = select(Project).where(Project.workspace_id == workspace.id)
+        if not include_archived:
+            statement = statement.where(Project.status == "active")
+        projects = session.scalars(
+            statement.order_by(Project.created_at.desc(), Project.id.desc()).limit(limit)
+        ).all()
+        return {"projects": [
+            {
+                "id": item.id, "name": item.name, "description": item.description,
+                "project_type": item.project_type, "status": item.status,
+                "created_at": item.created_at.isoformat(),
+                "updated_at": item.updated_at.isoformat(),
+            }
+            for item in projects
+        ]}
+
+    @app.get("/v1/workspaces/projects/{project_id}")
+    def get_workspace_project(
+        project_id: str,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        project = session.scalar(
+            select(Project).where(
+                Project.id == project_id,
+                Project.workspace_id == workspace.id,
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="Unknown project.")
+        return {"project": {
+            "id": project.id, "name": project.name,
+            "description": project.description, "project_type": project.project_type,
+            "status": project.status, "created_at": project.created_at.isoformat(),
+            "updated_at": project.updated_at.isoformat(),
+        }}
+
+    @app.patch("/v1/workspaces/projects/{project_id}")
+    def update_workspace_project(
+        project_id: str,
+        payload: ProjectUpdateRequest,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        try:
+            payload.validate_patch()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        project = session.scalar(
+            select(Project).where(
+                Project.id == project_id,
+                Project.workspace_id == workspace.id,
+            ).with_for_update()
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="Unknown project.")
+        changes = payload.model_dump(exclude_unset=True)
+        if project.status == "archived" and changes.get("status") != "active":
+            raise HTTPException(status_code=409, detail="Archived projects must be reactivated before editing.")
+        for field, value in changes.items():
+            setattr(project, field, value)
+        project.updated_at = _utcnow()
+        event_type = "project.archived" if project.status == "archived" else "project.updated"
+        _record_audit(
+            session, event_type=event_type, actor_type="workspace",
+            actor_id=workspace.id, target_type="project", target_id=project.id,
+            details={"changed_fields": sorted(changes.keys())},
+            workspace_id=workspace.id,
+        )
+        session.commit()
+        return {"project": {
+            "id": project.id, "name": project.name,
+            "description": project.description, "project_type": project.project_type,
+            "status": project.status, "created_at": project.created_at.isoformat(),
+            "updated_at": project.updated_at.isoformat(),
+        }}
 
     @app.get("/v1/workspaces/audit-events")
     def list_workspace_audit_events(
