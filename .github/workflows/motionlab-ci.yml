@@ -1,0 +1,55 @@
+name: MotionLab CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: motionlab-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-tests:
+    name: Protocol and permission tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install test dependency
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q
+
+  blender-smoke-test:
+    name: Blender 3.6 headless smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Install Blender 3.6.23
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            https://download.blender.org/release/Blender3.6/blender-3.6.23-linux-x64.tar.xz \
+            --output /tmp/blender.tar.xz
+          mkdir -p "${{ runner.temp }}/blender"
+          tar -xf /tmp/blender.tar.xz -C "${{ runner.temp }}/blender" --strip-components=1
+          echo "${{ runner.temp }}/blender" >> "$GITHUB_PATH"
+      - name: Verify Blender version
+        run: blender --background --python-exit-code 1 --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string); assert bpy.app.version[:2] == (3, 6)"
+      - name: Run Blender smoke test
+        run: blender --background --python-exit-code 1 --python tests/blender/smoke_cube.py
+
