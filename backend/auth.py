@@ -186,7 +186,7 @@ def build_auth_router(
             cleanup_counter = 0
             session.execute(
                 AuthRateLimitBucket.__table__.delete().where(
-                    AuthRateLimitBucket.window_start_epoch < now_epoch - 86400
+                    AuthRateLimitBucket.window_start_epoch < now_epoch - 32 * 86400
                 )
             )
         return count <= limit
@@ -251,6 +251,15 @@ def build_auth_router(
         if not allowed_ip or not allowed_email:
             session.commit()
             return {"message": "If the address can receive a sign-in link, one will be sent."}
+
+        # Keep initial customer trials below Resend's published free-tier
+        # allowance. These persistent global buckets are shared across workers.
+        if production:
+            allowed_daily = consume_bucket(session, "resend-free-daily", 90, 86400)
+            allowed_30_day = consume_bucket(session, "resend-free-30-day", 2700, 30 * 86400)
+            if not allowed_daily or not allowed_30_day:
+                session.commit()
+                return {"message": "If the address can receive a sign-in link, one will be sent."}
 
         if production and email_sender is None:
             session.rollback()
