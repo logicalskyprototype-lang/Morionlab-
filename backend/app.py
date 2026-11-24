@@ -83,7 +83,7 @@ class JobRequest(BaseModel):
         location = value.get("location", [0.0, 0.0, 0.0])
         if not isinstance(name, str) or not name.strip() or len(name) > 64:
             raise ValueError("Object name must contain 1-64 characters.")
-        if isinstance(size, bool) or not isinstance(size, (int, float)) or not 0.001 <= size <= 1000:
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or not 0.001 <= size <= 1000:
             raise ValueError("Cube size is outside the permitted range.")
         if not isinstance(location, (list, tuple)) or len(location) != 3:
             raise ValueError("Location must contain exactly three coordinates.")
@@ -275,11 +275,15 @@ def create_app(
     ):
         if not JOB_ID_PATTERN.fullmatch(job_id) or payload.job_id != job_id:
             raise HTTPException(status_code=400, detail="Result job ID does not match the URL.")
-        job = session.get(Job, job_id)
+        job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job.")
+        result = payload.model_dump()
         if job.status in {"completed", "failed"}:
-            return {"accepted": True, "result": json.loads(job.result_json)}
+            original = json.loads(job.result_json)
+            if original != result:
+                raise HTTPException(status_code=409, detail="A different result was already accepted for this job.")
+            return {"accepted": True, "result": original}
         if job.status != "leased":
             raise HTTPException(status_code=409, detail="Job is not currently leased.")
         lease = session.scalar(
@@ -287,11 +291,15 @@ def create_app(
             .where(WorkerLease.installation_id == "default-installation")
             .with_for_update()
         )
-        if lease is None or lease.active_job_id != job_id:
-            raise HTTPException(status_code=409, detail="Job is not leased to this installation.")
+        if (
+            lease is None
+            or lease.active_job_id != job_id
+            or not _is_future(lease.lease_expires_at, _utcnow())
+        ):
+            raise HTTPException(status_code=409, detail="Job lease is no longer active for this installation.")
         # A late result is accepted only while this installation still owns
-        # the lease; a redelivery cannot acknowledge another installation's job.
-        result = payload.model_dump()
+        # an unexpired lease. The current v0.1 single-installation contract does
+        # not yet include per-lease fencing tokens.
         job.result_json = json.dumps(result, separators=(",", ":"), sort_keys=True)
         job.status = payload.status
         job.lease_expires_at = None
