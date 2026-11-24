@@ -659,7 +659,7 @@ def create_app(
         if lease is not None:
             lease.active_job_id = None
             lease.lease_expires_at = None
-        _record_audit(session, event_type="installation.revoked", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id)
+        _record_audit(session, event_type="installation.revoked", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id, workspace_id=installation.workspace_id)
         session.commit()
         return {"revoked": True}
 
@@ -841,7 +841,7 @@ def create_app(
             grant.installation_id = _installation
             grant.token_hash = _token_hash(lease_token)
             grant.expires_at = expires_at
-        _record_audit(session, event_type="job.leased", actor_type="installation", actor_id=_installation, target_type="job", target_id=job.id, details={"attempt": job.attempts, "lease_expires_at": expires_at.isoformat()})
+        _record_audit(session, event_type="job.leased", actor_type="installation", actor_id=_installation, target_type="job", target_id=job.id, details={"attempt": job.attempts, "lease_expires_at": expires_at.isoformat()}, workspace_id=job.workspace_id)
         session.commit()
         return {
             "job": {
