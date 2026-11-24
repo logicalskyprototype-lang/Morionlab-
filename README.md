@@ -8,7 +8,7 @@ The first increment establishes a constrained, outbound-only bridge for approved
 
 The repository includes a v0.3 FastAPI service with workspace-scoped credentials, tenant isolation, installation-scoped workers, PostgreSQL lease locking, rate limiting, durable audit events and fenced result acknowledgements. The workspace authorization implementation is merged and CI-verified. The service is not deployed. See [the backend guide](backend/README.md), [the security model](docs/security-model.md), and [the architecture](docs/architecture.md).
 
-The first browser-based MotionLab interface foundation is under development in [`web/`](web/README.md). It includes the responsive dashboard, project navigation and a creative workspace preview. Project persistence, human authentication, live Blender editing and cloud execution are not connected yet.
+The responsive browser application in [`web/`](web/README.md) is now served by the FastAPI service on the same origin. This increment adds public email magic-link authentication, personal workspaces, browser sessions, and workspace-scoped project listing/creation. Email delivery is still a development outbox only; no production sender or domain is configured. Live Blender scene editing, asset uploads, and cloud execution remain future work.
 
 ## Development
 
