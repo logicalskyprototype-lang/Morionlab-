@@ -278,7 +278,7 @@ def build_auth_router(
         session.commit()
 
         base_origin = app_origin or str(request.base_url).rstrip("/")
-        link = f"{base_origin}/?auth_token={raw_token}"
+        link = f"{base_origin}/#auth_token={raw_token}"
         try:
             if email_sender is not None:
                 email_sender(email, link)
