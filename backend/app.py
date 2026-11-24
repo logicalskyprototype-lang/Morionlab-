@@ -115,6 +115,16 @@ def _token_matches(provided: str | None, expected: str | None) -> bool:
     return bool(provided and expected and hmac.compare_digest(provided, expected))
 
 
+def _is_future(value: datetime | None, now: datetime) -> bool:
+    if value is None:
+        return False
+    # SQLite drops timezone metadata for DateTime columns; all stored values
+    # are UTC, so restore UTC before comparing with the aware clock.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value > now
+
+
 def create_app(
     database_url: str | None = None,
     addon_token: str | None = None,
@@ -188,7 +198,7 @@ def create_app(
         )
         if lease is None:
             raise HTTPException(status_code=503, detail="Worker lease state is unavailable.")
-        if lease.active_job_id and lease.lease_expires_at and lease.lease_expires_at > now:
+        if lease.active_job_id and _is_future(lease.lease_expires_at, now):
             return {"job": None}
 
         statement = (
