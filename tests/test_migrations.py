@@ -31,9 +31,14 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_rate_limit_buckets",
             "motionlab_audit_events",
             "motionlab_projects",
+            "motionlab_users",
+            "motionlab_workspace_memberships",
+            "motionlab_browser_sessions",
+            "motionlab_magic_link_challenges",
+            "motionlab_auth_rate_limit_buckets",
         }.issubset(tables)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workspace_projects"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_public_identity"
             assert connection.execute(
                 text("SELECT status FROM motionlab_workspaces WHERE id = 'wsp_legacy'")
             ).scalar_one() == "active"
