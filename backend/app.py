@@ -17,7 +17,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -246,9 +247,18 @@ def create_app(
     database_url: str | None = None,
     admin_token: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    initialize_schema: bool | None = None,
 ) -> FastAPI:
     database_url = database_url or os.getenv("DATABASE_URL", "sqlite:///./motionlab.db")
     admin_token = admin_token if admin_token is not None else os.getenv("MOTIONLAB_ADMIN_TOKEN")
+    production = os.getenv("MOTIONLAB_ENV", "development").lower() == "production"
+    if production:
+        if not admin_token or len(admin_token) < 32:
+            raise RuntimeError("Production requires MOTIONLAB_ADMIN_TOKEN with at least 32 characters.")
+        if not database_url.startswith("postgresql+psycopg://"):
+            raise RuntimeError("Production requires PostgreSQL via the psycopg SQLAlchemy driver.")
+    if initialize_schema is None:
+        initialize_schema = not production and os.getenv("MOTIONLAB_SKIP_SCHEMA_INIT") != "1"
     if lease_seconds < 5 or lease_seconds > 3600:
         raise ValueError("Lease duration must be between 5 and 3600 seconds.")
 
@@ -257,7 +267,8 @@ def create_app(
         engine_options["connect_args"] = {"check_same_thread": False}
     engine = create_engine(database_url, **engine_options)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    Base.metadata.create_all(engine)
+    if initialize_schema:
+        Base.metadata.create_all(engine)
 
     app = FastAPI(title="MotionLab Job API", version="0.2.0")
 
@@ -295,6 +306,15 @@ def create_app(
     @app.get("/healthz")
     def health():
         return {"status": "ok", "service": "motionlab"}
+
+    @app.get("/readyz")
+    def readiness():
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            raise HTTPException(status_code=503, detail="Database is not ready.")
+        return {"status": "ready", "service": "motionlab"}
 
     @app.post(
         "/v1/admin/installations",
