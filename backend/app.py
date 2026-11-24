@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import math
 import hmac
+import math
 import json
 import os
 import re
@@ -83,12 +83,12 @@ class JobRequest(BaseModel):
         location = value.get("location", [0.0, 0.0, 0.0])
         if not isinstance(name, str) or not name.strip() or len(name) > 64:
             raise ValueError("Object name must contain 1-64 characters.")
-        if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or not 0.001 <= size <= 1000:
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or not 0.001 <= size <= 1000:
             raise ValueError("Cube size is outside the permitted range.")
         if not isinstance(location, (list, tuple)) or len(location) != 3:
             raise ValueError("Location must contain exactly three coordinates.")
         for axis in location:
-            if isinstance(axis, bool) or not isinstance(axis, (int, float)) or not math.isfinite(axis) or abs(axis) > 100000:
+            if isinstance(axis, bool) or not isinstance(axis, (int, float)) or abs(axis) > 100000 or not math.isfinite(axis):
                 raise ValueError("Location contains an invalid coordinate.")
         return {"name": name.strip(), "size": float(size), "location": [float(x) for x in location]}
 
