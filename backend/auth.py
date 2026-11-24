@@ -462,7 +462,7 @@ def build_auth_router(
         response.delete_cookie(
             SESSION_COOKIE,
             path="/",
-            secure=True,
+            secure=production,
             httponly=True,
             samesite="lax",
         )
