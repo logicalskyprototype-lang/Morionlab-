@@ -126,6 +126,9 @@ def test_lease_token_is_required_and_fences_stale_results(tmp_path):
     assert accepted.status_code == 200
     assert replay.status_code == 200
     assert replay.json() == accepted.json()
+    with app.state.session_factory() as session:
+        stored = session.get(Job, job_id)
+        assert "lease_token" not in stored.result_json
 
 
 def test_other_installation_cannot_submit_result(tmp_path):
