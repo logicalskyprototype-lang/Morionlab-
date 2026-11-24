@@ -83,3 +83,22 @@ def test_audit_event_and_domain_change_commit_together(tmp_path):
         ).one()
         assert event.actor_type == "admin"
         assert event.target_type == "installation"
+
+
+def test_invalid_credentials_share_ip_bucket_instead_of_rotating_tokens(tmp_path):
+    client, _ = make_client(tmp_path, limit=2)
+    first = client.get(
+        "/v1/admin/audit-events",
+        headers={"Authorization": "Bearer invalid-one"},
+    )
+    second = client.get(
+        "/v1/admin/audit-events",
+        headers={"Authorization": "Bearer invalid-two"},
+    )
+    third = client.get(
+        "/v1/admin/audit-events",
+        headers={"Authorization": "Bearer invalid-three"},
+    )
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert third.status_code == 429
