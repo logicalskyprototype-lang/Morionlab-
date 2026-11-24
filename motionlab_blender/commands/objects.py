@@ -1,4 +1,4 @@
-"""Allowlisted scene operations with a persistent per-scene idempotency ledger."""
+"""Allowlisted scene operations with a persistent project-wide idempotency ledger."""
 
 import hashlib
 import json
