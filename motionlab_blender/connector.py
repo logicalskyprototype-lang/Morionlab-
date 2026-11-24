@@ -160,14 +160,15 @@ class NetworkWorker:
 
     def _flush_results(self):
         while not self._stop.is_set():
-            if self._retry_result is not None:
-                item = self._retry_result
-                self._retry_result = None
-            else:
+            from_queue = self._retry_result is None
+            if from_queue:
                 try:
                     item = self._results.get_nowait()
                 except queue.Empty:
                     return
+            else:
+                item = self._retry_result
+                self._retry_result = None
 
             job_id, result = item
             try:
@@ -175,11 +176,9 @@ class NetworkWorker:
             except ConnectorError:
                 # Retain the failed item without racing a concurrent queue producer.
                 self._retry_result = item
-                if item is not None and self._results.unfinished_tasks:
-                    # Balance task accounting only for items removed from the queue.
-                    pass
+                if from_queue:
+                    self._results.task_done()
                 return
             else:
-                if self._retry_result is None and self._results.unfinished_tasks:
-                    # Queue task accounting is informational; no join() is used.
-                    pass
+                if from_queue:
+                    self._results.task_done()
