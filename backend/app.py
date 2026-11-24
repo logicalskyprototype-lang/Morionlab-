@@ -237,7 +237,7 @@ class ProjectUpdateRequest(BaseModel):
     @field_validator("status")
     @classmethod
     def valid_status(cls, value: str | None) -> str | None:
-        if value is not None and value not in {"active", "archived"}:
+        if value is None or value not in {"active", "archived"}:
             raise ValueError("Project status must be active or archived.")
         return value
 
