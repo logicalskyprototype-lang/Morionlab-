@@ -1,6 +1,8 @@
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
-from backend.app import create_app
+from backend.app import JobRequest, create_app
 
 ADDON = {"Authorization": "Bearer addon-test-token"}
 ADMIN = {"Authorization": "Bearer admin-test-token"}
@@ -96,14 +98,10 @@ def test_result_url_and_body_ids_must_match(tmp_path):
     assert response.status_code == 400
 
 
-def test_non_finite_numbers_are_rejected(tmp_path):
-    client, _ = client_for(tmp_path)
+def test_non_finite_numbers_are_rejected():
     for size in (float("nan"), float("inf")):
-        response = client.post(
-            "/v1/admin/jobs",
-            json=approved_job(args={"size": size}),
-            headers=ADMIN,
-        )
-        # JSON clients may reject NaN/Infinity before sending; either way,
-        # malformed numeric values must never become executable jobs.
-        assert response.status_code in {400, 422}
+        with pytest.raises(ValidationError):
+            JobRequest.model_validate(approved_job(args={"size": size}))
+    for axis in (float("nan"), float("inf")):
+        with pytest.raises(ValidationError):
+            JobRequest.model_validate(approved_job(args={"location": [axis, 0, 0]}))
