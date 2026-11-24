@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import create_app
+from backend.app import Base, WorkerLease, create_app
 
 DATABASE_URL = os.getenv("MOTIONLAB_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration database not configured")
@@ -27,6 +27,13 @@ def app():
         admin_token="admin-postgres-test-token",
         lease_seconds=30,
     )
+    # Each test gets an empty schema so queued jobs and the single worker lease
+    # cannot leak between tests in the shared CI PostgreSQL service.
+    Base.metadata.drop_all(application.state.engine)
+    Base.metadata.create_all(application.state.engine)
+    with application.state.session_factory() as session:
+        session.add(WorkerLease(installation_id="default-installation"))
+        session.commit()
     yield application
     application.state.engine.dispose()
 
