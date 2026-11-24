@@ -21,7 +21,12 @@ def test_motionlab_web_shell_contains_core_product_areas():
         assert area in app
 
 
-def test_web_preview_does_not_claim_project_persistence_is_live():
+def test_web_shell_uses_authenticated_project_persistence():
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
-    assert "Project persistence is not connected yet" in app
-    assert "Saving and cloud sync will be enabled" in app
+    assert 'style="display:none"' in html
+    assert 'id="sign-out"' in html
+    assert 'api("/v1/auth/me")' in app
+    assert 'api("/v1/app/projects")' in app
+    assert 'api("/v1/auth/logout"' in app
+    assert "Saving and cloud sync will be enabled" not in app
