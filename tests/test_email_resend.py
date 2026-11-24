@@ -59,7 +59,7 @@ def test_resend_sender_fails_closed_without_credentials(monkeypatch):
 
 def test_resend_sender_rejects_header_injection(monkeypatch):
     monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
-    monkeypatch.setenv("MOTIONLAB_EMAIL_FROM", "MotionLab\\r\\nBcc: attacker@example.com")
+    monkeypatch.setenv("MOTIONLAB_EMAIL_FROM", "MotionLab\r\nBcc: attacker@example.com")
     sender = email_resend.build_resend_sender()
     with pytest.raises(RuntimeError, match="header characters"):
         sender("person@example.com", "https://motionlab.example/#auth_token=secret")
