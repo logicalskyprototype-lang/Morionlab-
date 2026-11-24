@@ -135,15 +135,19 @@ def test_workspace_credential_revocation_and_workspace_deactivation(tmp_path):
         json=job_payload(worker["installation_id"]),
     ).status_code == 401
 
-    _, active_token = create_workspace(client, "Workspace C")
-    workspace_c_id = client.post(
-        "/v1/admin/workspaces", headers=ADMIN, json={"name": "Workspace D"}
-    ).json()["workspace_id"]
+    workspace_c, active_token = create_workspace(client, "Workspace C")
+    worker_c, _ = create_installation(client, "C Blender", workspace_c["workspace_id"])
     deactivated = client.post(
-        f"/v1/admin/workspaces/{workspace_c_id}/deactivate",
+        f"/v1/admin/workspaces/{workspace_c['workspace_id']}/deactivate",
         headers=ADMIN,
     )
     assert deactivated.status_code == 200
+    blocked = client.post(
+        "/v1/workspaces/jobs",
+        headers=active_token,
+        json=job_payload(worker_c["installation_id"]),
+    )
+    assert blocked.status_code == 403
 
 
 def test_workspace_audit_events_are_scoped(tmp_path):
