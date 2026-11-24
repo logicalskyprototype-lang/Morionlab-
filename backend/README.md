@@ -1,6 +1,6 @@
 # MotionLab backend
 
-This service implements the v0.1 contract consumed by `motionlab_blender.connector`.
+This service implements the v0.2 installation-scoped contract consumed by `motionlab_blender.connector`.
 
 ## Local development
 
@@ -10,8 +10,7 @@ Requires Python 3.11+.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-export MOTIONLAB_ADDON_TOKEN='replace-with-a-long-random-addon-token'
-export MOTIONLAB_ADMIN_TOKEN='replace-with-a-separate-long-random-admin-token'
+export MOTIONLAB_ADMIN_TOKEN='replace-with-a-long-random-server-only-token'
 uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
@@ -22,16 +21,23 @@ Run tests with `python -m pytest -q`.
 ## API
 
 - `GET /healthz`: liveness check.
-- `POST /v1/admin/jobs`: enqueue a job. Requires the admin bearer token.
-- `GET /v1/jobs/next`: lease the next job. Requires the add-on bearer token.
-- `POST /v1/jobs/{job_id}/result`: accept the saved Blender result. Requires the add-on bearer token.
+- `POST /v1/admin/installations`: provision an installation. Returns its access token once.
+- `POST /v1/admin/installations/{installation_id}/revoke`: revoke credentials and release its unfinished assigned jobs.
+- `POST /v1/admin/jobs`: enqueue a job for a specific active installation.
+- `POST /v1/admin/jobs/{job_id}/assign`: reassign a queued job to another active installation.
+- `GET /v1/jobs/next`: lease the next job assigned to the authenticated installation.
+- `POST /v1/jobs/{job_id}/result`: accept the saved Blender result using its current lease token.
 
-The initial service deliberately supports one configured add-on installation/token. It allows only `create_cube`, requires `approved: true` and the `scene.write` scope, and validates command arguments again on the server.
+The service issues a random installation credential and stores only its SHA-256 hash. The plaintext credential is returned only at provisioning time. Revocation is immediate for subsequent requests. Each installation has its own lease row, so simultaneous pollers for one installation cannot obtain overlapping jobs while different installations remain isolated.
 
-**Trust boundary:** the admin bearer token is a privileged server-side credential. Possession of it authorizes job creation; the `approved` field records the approval decision made by that trusted caller. Never put this token in the Grey browser UI, Blender add-on, mobile clients, or any public client. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. The add-on token is a separate, lower-privilege credential and cannot enqueue jobs.
+Every lease receives a new random fencing token. Only the token hash is stored. A result from a previous lease attempt is rejected after a job is redelivered. The Blender add-on carries the token through its save-gated result path.
 
-## Deployment boundary
+Only `create_cube` is supported. The server requires `approved: true` and the `scene.write` scope, and validates command arguments again.
 
-This is a backend implementation, not a deployed service. Do not expose it publicly until production authentication, HTTPS termination, persistent PostgreSQL, installation-specific credentials, lease concurrency, rate limiting, structured operational logging, backups and deployment configuration have been reviewed.
+## Trust and deployment boundaries
 
-The current add-on credential represents one installation. Before multi-device or multi-user use, add an installation registry and bind each lease to a distinct installation identity. SQLite is for deterministic development tests, not concurrent production workers.
+The admin bearer token is a privileged server-side credential. It can provision/revoke installations, assign jobs, and enqueue work. Never put it in Grey's browser UI, Blender, mobile clients, or any public client. A trusted server-side orchestrator must verify user identity, workspace ownership, and explicit user approval before calling administrative endpoints. The `approved` field is not proof by itself; it is a claim made by the trusted admin caller.
+
+Installation credentials authenticate a worker installation, not a human user or tenant. This increment does not yet implement user/workspace authorization, credential rotation, rate limiting, audit logging, database migrations for an existing deployment, or production secret management. Treat the schema as a development/test schema until an explicit migration plan is reviewed.
+
+This is not a deployed service. Do not expose it publicly until HTTPS termination, persistent PostgreSQL, migrations, admin credential management, rate limiting, operational logging, backups, and production deployment configuration have been reviewed. SQLite is for deterministic development tests, not concurrent production workers.
