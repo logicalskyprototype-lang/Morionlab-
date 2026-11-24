@@ -35,7 +35,7 @@ def upgrade():
             "motionlab_installations",
             sa.Column("id", sa.String(length=36), primary_key=True),
             sa.Column("name", sa.String(length=100), nullable=False),
-            sa.Column("token_hash", sa.String(length=64), nullable=False, unique=True),
+            sa.Column("token_hash", sa.String(length=64), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         )
