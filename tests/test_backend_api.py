@@ -94,3 +94,16 @@ def test_result_url_and_body_ids_must_match(tmp_path):
     response = client.post(f"/v1/jobs/{job_id}/result",
                            json={"job_id": "different", "status": "completed"}, headers=ADDON)
     assert response.status_code == 400
+
+
+def test_non_finite_numbers_are_rejected(tmp_path):
+    client, _ = client_for(tmp_path)
+    for size in (float("nan"), float("inf")):
+        response = client.post(
+            "/v1/admin/jobs",
+            json=approved_job(args={"size": size}),
+            headers=ADMIN,
+        )
+        # JSON clients may reject NaN/Infinity before sending; either way,
+        # malformed numeric values must never become executable jobs.
+        assert response.status_code in {400, 422}
