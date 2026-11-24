@@ -208,3 +208,24 @@ def test_magic_link_token_is_only_in_url_fragment(tmp_path):
     parsed = urlsplit(link)
     assert parsed.query == ""
     assert parsed.fragment.startswith("auth_token=")
+
+
+def test_production_requires_explicit_https_app_origin(monkeypatch):
+    from backend.app import create_app
+    import pytest
+
+    monkeypatch.setenv("MOTIONLAB_ENV", "production")
+    monkeypatch.setenv("MOTIONLAB_ADMIN_TOKEN", "a" * 40)
+    monkeypatch.delenv("MOTIONLAB_APP_ORIGIN", raising=False)
+    with pytest.raises(RuntimeError, match="MOTIONLAB_APP_ORIGIN"):
+        create_app(
+            database_url="postgresql+psycopg://motionlab:secret@localhost/motionlab",
+            initialize_schema=False,
+        )
+
+    monkeypatch.setenv("MOTIONLAB_APP_ORIGIN", "http://motionlab.example")
+    with pytest.raises(RuntimeError, match="HTTPS origin"):
+        create_app(
+            database_url="postgresql+psycopg://motionlab:secret@localhost/motionlab",
+            initialize_schema=False,
+        )
