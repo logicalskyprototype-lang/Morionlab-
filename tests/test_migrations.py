@@ -32,7 +32,7 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_audit_events",
         }.issubset(tables)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_installation_job_schema"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_rate_limits_audit_events"
     finally:
         engine.dispose()
 
@@ -59,7 +59,7 @@ def test_migration_adopts_existing_create_all_schema_without_losing_rows(tmp_pat
             ).scalar_one()
             assert name == "Existing worker"
             assert connection.execute(text("SELECT COUNT(*) FROM motionlab_jobs")).scalar_one() == 0
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_installation_job_schema"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_rate_limits_audit_events"
     finally:
         engine.dispose()
 
