@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -138,6 +138,61 @@ class AuditEvent(Base):
 
 class RateLimitBucket(Base):
     __tablename__ = "motionlab_rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class UserAccount(Base):
+    __tablename__ = "motionlab_users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True, index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkspaceMembership(Base):
+    __tablename__ = "motionlab_workspace_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id", name="uq_motionlab_membership_user_workspace"),
+        Index("ix_motionlab_workspace_memberships_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("motionlab_users.id"), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BrowserSession(Base):
+    __tablename__ = "motionlab_browser_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("motionlab_users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MagicLinkChallenge(Base):
+    __tablename__ = "motionlab_magic_link_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthRateLimitBucket(Base):
+    __tablename__ = "motionlab_auth_rate_limit_buckets"
 
     bucket_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     window_start_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -629,6 +684,30 @@ def create_app(
         if workspace is None or workspace.status != "active":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active.")
         return workspace
+
+    from backend.auth import build_auth_router
+
+    app.state.magic_link_outbox = []
+    app.include_router(
+        build_auth_router(
+            session_factory=SessionLocal,
+            engine=engine,
+            UserAccount=UserAccount,
+            WorkspaceMembership=WorkspaceMembership,
+            BrowserSession=BrowserSession,
+            MagicLinkChallenge=MagicLinkChallenge,
+            AuthRateLimitBucket=AuthRateLimitBucket,
+            Workspace=Workspace,
+            Project=Project,
+            AuditEvent=AuditEvent,
+            utcnow=_utcnow,
+            token_hash=_token_hash,
+            record_audit=_record_audit,
+            outbox=app.state.magic_link_outbox,
+            production=production,
+            app_origin=os.getenv("MOTIONLAB_APP_ORIGIN"),
+        )
+    )
 
     @app.get("/healthz")
     def health():
