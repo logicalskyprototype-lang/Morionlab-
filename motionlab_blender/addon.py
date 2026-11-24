@@ -1,28 +1,54 @@
-"""Blender-specific registration and main-thread execution."""
+"""Blender registration, save-gated result delivery and main-thread execution."""
 
 import bpy
 
 from .command_queue import CommandQueue
 from .connector import ConnectorClient, NetworkWorker
 from .permissions import authorize_job
-from .protocol import ProtocolError
 from .commands.objects import execute_command
 
 _COMMANDS = CommandQueue(maxsize=100)
 _WORKER = None
 _MAX_JOBS_PER_TICK = 10
+_PENDING_RESULTS = {}
+_SAVED_RESULTS = {}
+
+
+def _on_save_post(_unused):
+    """Only results included in a completed .blend save may be acknowledged."""
+    _SAVED_RESULTS.update(_PENDING_RESULTS)
+    _PENDING_RESULTS.clear()
+
+
+def _flush_saved_results():
+    """Move results from the post-save buffer to the network worker."""
+    if _WORKER is None:
+        return 0.25
+    for job_id, result in list(_SAVED_RESULTS.items()):
+        if not _WORKER.can_accept_result():
+            break
+        if _WORKER.submit_result(job_id, result):
+            _SAVED_RESULTS.pop(job_id, None)
+        else:
+            break
+    return 0.25
 
 
 def _process_queue():
-    global _WORKER
     processed = 0
+
+    # Never acknowledge scene changes from an untitled/unsaved Blender project.
+    # Jobs remain queued until the user saves the project at least once.
+    if not bpy.data.filepath:
+        return 1.0
+
     while processed < _MAX_JOBS_PER_TICK:
-        # Do not execute more scene mutations than the result channel can retain.
         if _WORKER is not None and not _WORKER.can_accept_result():
             break
         job = _COMMANDS.get_nowait()
         if job is None:
             break
+
         result = {"job_id": job["id"], "status": "failed"}
         try:
             authorize_job(job)
@@ -31,26 +57,19 @@ def _process_queue():
                 "output": execute_command(job),
             })
         except Exception as exc:
-            # Keep one malformed or failed command from terminating the timer.
             result["error"] = str(exc)
         finally:
-            if _WORKER is not None:
-                accepted = _WORKER.submit_result(job["id"], result)
-                if not accepted:
-                    # This should be prevented by can_accept_result() above.
-                    # Stop the worker rather than silently discarding the result.
-                    _WORKER.stop()
-                    raise RuntimeError("MotionLab result queue capacity changed unexpectedly.")
+            # Do not send this result until save_post confirms the ledger and
+            # scene mutation were included in a successful .blend save.
+            _PENDING_RESULTS[job["id"]] = result
             _COMMANDS.task_done()
         processed += 1
 
-    # Yield promptly so a backlog cannot monopolize Blender's UI thread.
     return 0.01 if not _COMMANDS.empty() else 0.25
 
 
 def _enqueue_job(job):
     if not _COMMANDS.put(job):
-        # The server must retain/re-deliver leased jobs until their result arrives.
         from .connector import ConnectorError
         raise ConnectorError("Local command queue is full; job was not accepted.")
 
@@ -101,6 +120,8 @@ class MOTIONLAB_OT_Connect(bpy.types.Operator):
         _WORKER.start()
         if not bpy.app.timers.is_registered(_process_queue):
             bpy.app.timers.register(_process_queue, first_interval=0.25)
+        if not bpy.app.timers.is_registered(_flush_saved_results):
+            bpy.app.timers.register(_flush_saved_results, first_interval=0.25)
         self.report({"INFO"}, "MotionLab connection worker started")
         return {"FINISHED"}
 
@@ -114,6 +135,8 @@ _CLASSES = (
 def register():
     for cls in _CLASSES:
         bpy.utils.register_class(cls)
+    if _on_save_post not in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.append(_on_save_post)
 
 
 def unregister():
@@ -122,7 +145,10 @@ def unregister():
         if not _WORKER.stop():
             raise RuntimeError("MotionLab network worker did not stop cleanly")
         _WORKER = None
-    if bpy.app.timers.is_registered(_process_queue):
-        bpy.app.timers.unregister(_process_queue)
+    for timer in (_process_queue, _flush_saved_results):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
+    if _on_save_post in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.remove(_on_save_post)
     for cls in reversed(_CLASSES):
         bpy.utils.unregister_class(cls)
