@@ -144,7 +144,7 @@ function projectsPage() {
 }
 
 function workspacePage() {
-  return `<div class="workspace-top"><div><div class="eyebrow accent">CREATIVE ENVIRONMENT / ${selectedProject.id}</div><h1>${selectedProject.name}</h1><p class="intro">Your scene workspace is ready to be connected.</p></div><div class="workspace-actions"><span class="draft-pill">● Draft preview</span><button class="secondary-button" data-page="connections">Connect Blender</button></div></div>
+  return `<div class="workspace-top"><div><div class="eyebrow accent">CREATIVE ENVIRONMENT / ${escapeHtml(selectedProject.id)}</div><h1>${escapeHtml(selectedProject.name)}</h1><p class="intro">Your scene workspace is ready to be connected.</p></div><div class="workspace-actions"><span class="draft-pill">● Draft preview</span><button class="secondary-button" data-page="connections">Connect Blender</button></div></div>
   <div class="editor-shell">
     <div class="editor-toolbar"><span class="editor-brand">SCENE VIEW</span><span class="editor-tool active">Select</span><span class="editor-tool">Move</span><span class="editor-tool">Rotate</span><span class="editor-tool">Scale</span><span class="editor-spacer"></span><span class="editor-resolution">PERSPECTIVE · 1:1</span></div>
     <div class="editor-body"><aside class="editor-hierarchy"><div class="editor-panel-title">SCENE HIERARCHY <span>＋</span></div><div class="tree-row selected">▾ <span>◫</span> Scene Collection</div><div class="tree-row indent">◈ <span>Camera</span></div><div class="tree-row indent">◈ <span>Light</span></div><div class="tree-row indent">◈ <span>Cube</span></div></aside>
