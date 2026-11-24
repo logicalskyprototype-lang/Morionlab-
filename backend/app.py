@@ -336,9 +336,22 @@ def create_app(
             return await call_next(request)
 
         supplied = _bearer_token(request.headers.get("authorization"))
-        if supplied:
+        valid_credential = _token_matches(supplied, admin_token)
+        if supplied and not valid_credential:
+            with SessionLocal() as auth_session:
+                valid_credential = auth_session.scalar(
+                    select(Installation.id).where(
+                        Installation.token_hash == _token_hash(supplied),
+                        Installation.revoked_at.is_(None),
+                    )
+                ) is not None
+
+        if supplied and valid_credential:
             principal = "credential:" + _token_hash(supplied)
         else:
+            # Unknown or invalid credentials share the client-IP bucket,
+            # preventing attackers from bypassing limits by rotating tokens.
+            # Only request.client.host is trusted; forwarded headers are ignored.
             client_host = request.client.host if request.client else "unknown"
             principal = "ip:" + client_host
         bucket_key = hashlib.sha256(principal.encode("utf-8")).hexdigest()
