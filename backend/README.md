@@ -6,6 +6,8 @@ This service implements the v0.2 installation-scoped job API consumed by the Ble
 
 Requires Python 3.11+.
 
+For a production runtime install, use `requirements.txt`. For local development and tests, use `requirements-dev.txt`.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
