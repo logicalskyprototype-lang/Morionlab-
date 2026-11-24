@@ -141,6 +141,7 @@ def build_auth_router(
     email_sender=None,
 ) -> APIRouter:
     router = APIRouter()
+    cleanup_counter = 0
 
     def get_session():
         with session_factory() as session:
@@ -155,6 +156,7 @@ def build_auth_router(
             raise HTTPException(status_code=403, detail="Request origin is not allowed.")
 
     def consume_bucket(session: Session, key: str, limit: int, window_seconds: int) -> bool:
+        nonlocal cleanup_counter
         now_epoch = int(utcnow().timestamp())
         window_start = now_epoch - (now_epoch % window_seconds)
         statement_factory = (
@@ -178,7 +180,16 @@ def build_auth_router(
                 ),
             },
         ).returning(AuthRateLimitBucket.request_count)
-        return int(session.scalar(statement) or 0) <= limit
+        count = int(session.scalar(statement) or 0)
+        cleanup_counter += 1
+        if cleanup_counter >= 1000:
+            cleanup_counter = 0
+            session.execute(
+                AuthRateLimitBucket.__table__.delete().where(
+                    AuthRateLimitBucket.window_start_epoch < now_epoch - 86400
+                )
+            )
+        return count <= limit
 
     def resolve_identity(request: Request, session: Session):
         raw_token = request.cookies.get(SESSION_COOKIE)
@@ -293,6 +304,10 @@ def build_auth_router(
         session: Session = Depends(get_session),
     ):
         check_origin(request)
+        client_host = request.client.host if request.client else "unknown"
+        if not consume_bucket(session, "verify-ip:" + client_host, 30, 3600):
+            session.commit()
+            raise HTTPException(status_code=429, detail="Too many verification attempts. Try again later.")
         challenge = session.scalar(
             select(MagicLinkChallenge)
             .where(MagicLinkChallenge.token_hash == token_hash(payload.token))
