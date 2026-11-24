@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
+import math
 import hmac
 import json
 import os
@@ -14,7 +14,6 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -38,6 +37,14 @@ class Job(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkerLease(Base):
+    __tablename__ = "motionlab_worker_leases"
+
+    installation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    active_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class JobRequest(BaseModel):
@@ -74,12 +81,12 @@ class JobRequest(BaseModel):
         location = value.get("location", [0.0, 0.0, 0.0])
         if not isinstance(name, str) or not name.strip() or len(name) > 64:
             raise ValueError("Object name must contain 1-64 characters.")
-        if isinstance(size, bool) or not isinstance(size, (int, float)) or not 0.001 <= size <= 1000:
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or not math.isfinite(size) or not 0.001 <= size <= 1000:
             raise ValueError("Cube size is outside the permitted range.")
         if not isinstance(location, (list, tuple)) or len(location) != 3:
             raise ValueError("Location must contain exactly three coordinates.")
         for axis in location:
-            if isinstance(axis, bool) or not isinstance(axis, (int, float)) or abs(axis) > 100000:
+            if isinstance(axis, bool) or not isinstance(axis, (int, float)) or not math.isfinite(axis) or abs(axis) > 100000:
                 raise ValueError("Location contains an invalid coordinate.")
         return {"name": name.strip(), "size": float(size), "location": [float(x) for x in location]}
 
@@ -126,6 +133,10 @@ def create_app(
     engine = create_engine(database_url, **engine_options)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
     Base.metadata.create_all(engine)
+    with SessionLocal() as bootstrap_session:
+        if bootstrap_session.get(WorkerLease, "default-installation") is None:
+            bootstrap_session.add(WorkerLease(installation_id="default-installation"))
+            bootstrap_session.commit()
 
     app = FastAPI(title="MotionLab Job API", version="0.1.0")
 
@@ -168,13 +179,16 @@ def create_app(
     @app.get("/v1/jobs/next")
     def next_job(_installation: str = Depends(require_addon), session: Session = Depends(get_session)):
         now = _utcnow()
-        active = session.scalar(
-            select(Job).where(
-                Job.status == "leased",
-                Job.lease_expires_at > now,
-            ).order_by(Job.created_at).limit(1)
+        # Serialize claims for this configured installation. PostgreSQL honors
+        # this row lock, preventing two poll requests from leasing two jobs.
+        lease = session.scalar(
+            select(WorkerLease)
+            .where(WorkerLease.installation_id == "default-installation")
+            .with_for_update()
         )
-        if active is not None:
+        if lease is None:
+            raise HTTPException(status_code=503, detail="Worker lease state is unavailable.")
+        if lease.active_job_id and lease.lease_expires_at and lease.lease_expires_at > now:
             return {"job": None}
 
         statement = (
@@ -190,10 +204,17 @@ def create_app(
             statement = statement.with_for_update(skip_locked=True)
         job = session.scalar(statement)
         if job is None:
+            lease.active_job_id = None
+            lease.lease_expires_at = None
+            session.commit()
             return {"job": None}
+
+        expires_at = now + timedelta(seconds=lease_seconds)
         job.status = "leased"
-        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+        job.lease_expires_at = expires_at
         job.attempts += 1
+        lease.active_job_id = job.id
+        lease.lease_expires_at = expires_at
         session.commit()
         return {
             "job": {
@@ -220,12 +241,21 @@ def create_app(
             return {"accepted": True, "result": json.loads(job.result_json)}
         if job.status != "leased":
             raise HTTPException(status_code=409, detail="Job is not currently leased.")
-        # A late result is accepted if the job has not been leased to another
-        # worker. This installation is currently the only configured worker.
+        lease = session.scalar(
+            select(WorkerLease)
+            .where(WorkerLease.installation_id == "default-installation")
+            .with_for_update()
+        )
+        if lease is None or lease.active_job_id != job_id:
+            raise HTTPException(status_code=409, detail="Job is not leased to this installation.")
+        # A late result is accepted only while this installation still owns
+        # the lease; a redelivery cannot acknowledge another installation's job.
         result = payload.model_dump()
         job.result_json = json.dumps(result, separators=(",", ":"), sort_keys=True)
         job.status = "completed"
         job.lease_expires_at = None
+        lease.active_job_id = None
+        lease.lease_expires_at = None
         session.commit()
         return {"accepted": True, "result": result}
 
