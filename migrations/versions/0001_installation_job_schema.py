@@ -17,6 +17,34 @@ def upgrade():
     bind = op.get_bind()
     existing = set(inspect(bind).get_table_names())
 
+    # Never stamp an existing but structurally incompatible database as upgraded.
+    expected_columns = {
+        "motionlab_jobs": {
+            "id", "command", "args_json", "authorization_json", "status",
+            "lease_expires_at", "attempts", "result_json", "created_at",
+        },
+        "motionlab_installations": {
+            "id", "name", "token_hash", "created_at", "revoked_at",
+        },
+        "motionlab_job_assignments": {"job_id", "installation_id"},
+        "motionlab_worker_leases": {
+            "installation_id", "active_job_id", "lease_expires_at",
+        },
+        "motionlab_job_lease_grants": {
+            "job_id", "installation_id", "token_hash", "expires_at",
+        },
+    }
+    inspector = inspect(bind)
+    for table_name, required in expected_columns.items():
+        if table_name in existing:
+            actual = {column["name"] for column in inspector.get_columns(table_name)}
+            missing = required - actual
+            if missing:
+                raise RuntimeError(
+                    f"Cannot adopt {table_name}: missing required columns "
+                    f"{sorted(missing)}. Use a reviewed migration for this schema."
+                )
+
     if "motionlab_jobs" not in existing:
         op.create_table(
             "motionlab_jobs",
