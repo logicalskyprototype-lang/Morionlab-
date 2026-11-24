@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+from pathlib import Path
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,8 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -533,7 +535,17 @@ def create_app(
             )
             bootstrap_session.commit()
 
-    app = FastAPI(title="MotionLab Job API", version="0.2.0")
+    app = FastAPI(title="MotionLab Job API", version="0.3.0")
+
+    # Serve the browser application from the API origin. This keeps session
+    # cookies, CSRF Origin checks, and browser API calls on one origin.
+    web_root = Path(__file__).resolve().parent.parent / "web"
+    if web_root.is_dir():
+        app.mount("/web", StaticFiles(directory=web_root), name="motionlab-web")
+
+        @app.get("/", include_in_schema=False)
+        def web_index():
+            return FileResponse(web_root / "index.html")
 
     app.state.rate_limit_cleanup_counter = 0
 
