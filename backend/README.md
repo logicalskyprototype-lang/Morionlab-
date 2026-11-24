@@ -23,6 +23,8 @@ Run tests with `python -m pytest -q`. Apply schema migrations with `alembic upgr
 ## API
 
 - `GET /healthz`: liveness check.
+- `GET /readyz`: database connectivity readiness check.
+- `GET /v1/admin/audit-events`: read the latest durable audit events (admin only, maximum 500 per request).
 - `POST /v1/admin/installations`: provision an installation. Returns its bearer token once; only the SHA-256 token hash is stored.
 - `POST /v1/admin/installations/{installation_id}/revoke`: revoke credentials and release that installation's unfinished jobs.
 - `POST /v1/admin/jobs`: enqueue a job explicitly assigned to an active installation.
@@ -31,6 +33,14 @@ Run tests with `python -m pytest -q`. Apply schema migrations with `alembic upgr
 - `POST /v1/jobs/{job_id}/result`: submit the result with the current lease token.
 
 All `/v1/admin/*` routes require the server-side admin bearer token. Blender installations receive distinct credentials. Lease tokens are rotated on redelivery, and only the current unexpired token can acknowledge a job.
+
+## API abuse controls and audit events
+
+All `/v1/*` requests use a persistent fixed-window rate limit. The default is 120 requests per 60 seconds per valid admin or installation credential. Requests with missing or invalid credentials share a client-IP bucket. `request.client.host` is used; forwarded headers are deliberately ignored unless a future deployment explicitly configures trusted proxies. When the limit is exceeded, the API returns HTTP 429 with `Retry-After`. If the rate-limit store is unavailable, protected API traffic fails closed with HTTP 503.
+
+The server stores only a SHA-256 digest of each rate-limit identity, not bearer credentials. Expired buckets are cleaned opportunistically. Configure `rate_limit_requests` and `rate_limit_window_seconds` through `create_app` when constructing the service.
+
+Installation creation/revocation, job creation/assignment/lease, and accepted job results write audit events in the same database transaction as the corresponding state change. Audit details are intentionally allowlisted and must never contain access tokens, lease tokens, or authorization headers. Administrators can inspect recent entries through `GET /v1/admin/audit-events?limit=100`. The audit endpoint is read-only; audit events are not editable through the API.
 
 Only `create_cube` is currently supported. The server requires `approved: true` and the `scene.write` scope, then validates the command arguments again. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. Never put the admin token in Grey's browser UI, Blender, mobile clients, or any public client.
 

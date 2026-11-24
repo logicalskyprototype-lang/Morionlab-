@@ -13,11 +13,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Integer, String, Text, create_engine, select, text
+from sqlalchemy import DateTime, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -79,6 +81,51 @@ class JobLeaseGrant(Base):
     installation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AuditEvent(Base):
+    __tablename__ = "motionlab_audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class RateLimitBucket(Base):
+    __tablename__ = "motionlab_rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+def _record_audit(
+    session: Session,
+    *,
+    event_type: str,
+    actor_type: str,
+    actor_id: str,
+    target_type: str,
+    target_id: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    session.add(
+        AuditEvent(
+            id=str(uuid.uuid4()),
+            event_type=event_type,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            target_type=target_type,
+            target_id=target_id,
+            details_json=json.dumps(details or {}, separators=(",", ":"), sort_keys=True),
+            created_at=_utcnow(),
+        )
+    )
 
 
 class InstallationRequest(BaseModel):
@@ -248,6 +295,8 @@ def create_app(
     admin_token: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     initialize_schema: bool | None = None,
+    rate_limit_requests: int = 120,
+    rate_limit_window_seconds: int = 60,
 ) -> FastAPI:
     database_url = database_url or os.getenv("DATABASE_URL", "sqlite:///./motionlab.db")
     admin_token = admin_token if admin_token is not None else os.getenv("MOTIONLAB_ADMIN_TOKEN")
@@ -261,6 +310,10 @@ def create_app(
         initialize_schema = not production and os.getenv("MOTIONLAB_SKIP_SCHEMA_INIT") != "1"
     if production and initialize_schema:
         raise RuntimeError("Production schema changes must be applied with Alembic, not create_all().")
+    if rate_limit_requests < 1 or rate_limit_requests > 10000:
+        raise ValueError("Rate limit must be between 1 and 10000 requests.")
+    if rate_limit_window_seconds < 1 or rate_limit_window_seconds > 3600:
+        raise ValueError("Rate limit window must be between 1 and 3600 seconds.")
     if lease_seconds < 5 or lease_seconds > 3600:
         raise ValueError("Lease duration must be between 5 and 3600 seconds.")
 
@@ -273,6 +326,97 @@ def create_app(
         Base.metadata.create_all(engine)
 
     app = FastAPI(title="MotionLab Job API", version="0.2.0")
+
+    app.state.rate_limit_cleanup_counter = 0
+
+    @app.middleware("http")
+    async def enforce_api_rate_limit(request: Request, call_next):
+        if not request.url.path.startswith("/v1/"):
+            return await call_next(request)
+
+        supplied = _bearer_token(request.headers.get("authorization"))
+        valid_credential = _token_matches(supplied, admin_token)
+        if supplied and not valid_credential:
+            try:
+                with SessionLocal() as auth_session:
+                    valid_credential = auth_session.scalar(
+                        select(Installation.id).where(
+                            Installation.token_hash == _token_hash(supplied),
+                            Installation.revoked_at.is_(None),
+                        )
+                    ) is not None
+            except SQLAlchemyError:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "API protection is temporarily unavailable."},
+                )
+
+        if supplied and valid_credential:
+            principal = "credential:" + _token_hash(supplied)
+        else:
+            # Unknown or invalid credentials share the client-IP bucket,
+            # preventing attackers from bypassing limits by rotating tokens.
+            # Only request.client.host is trusted; forwarded headers are ignored.
+            client_host = request.client.host if request.client else "unknown"
+            principal = "ip:" + client_host
+        bucket_key = hashlib.sha256(principal.encode("utf-8")).hexdigest()
+        now_epoch = int(_utcnow().timestamp())
+        window_start = now_epoch - (now_epoch % rate_limit_window_seconds)
+
+        try:
+            with SessionLocal() as rate_session:
+                insert_fn = (
+                    postgresql_insert
+                    if engine.dialect.name == "postgresql"
+                    else sqlite_insert
+                )
+                statement = insert_fn(RateLimitBucket).values(
+                    bucket_key=bucket_key,
+                    window_start_epoch=window_start,
+                    request_count=1,
+                )
+                statement = statement.on_conflict_do_update(
+                    index_elements=[RateLimitBucket.bucket_key],
+                    set_={
+                        "window_start_epoch": window_start,
+                        "request_count": case(
+                            (
+                                RateLimitBucket.window_start_epoch == window_start,
+                                RateLimitBucket.request_count + 1,
+                            ),
+                            else_=1,
+                        ),
+                    },
+                ).returning(RateLimitBucket.request_count)
+                request_count = rate_session.scalar(statement)
+                rate_session.commit()
+
+                app.state.rate_limit_cleanup_counter += 1
+                if app.state.rate_limit_cleanup_counter >= 1000:
+                    app.state.rate_limit_cleanup_counter = 0
+                    rate_session.execute(
+                        delete(RateLimitBucket).where(
+                            RateLimitBucket.window_start_epoch
+                            < now_epoch - (2 * rate_limit_window_seconds)
+                        )
+                    )
+                    rate_session.commit()
+        except SQLAlchemyError:
+            # Fail closed: do not silently disable abuse controls if their
+            # persistence layer is unavailable.
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "API protection is temporarily unavailable."},
+            )
+
+        if request_count > rate_limit_requests:
+            retry_after = max(1, window_start + rate_limit_window_seconds - now_epoch)
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={"detail": "Rate limit exceeded."},
+                headers={"Retry-After": str(retry_after)},
+            )
+        return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(_request, _exc):
@@ -334,6 +478,7 @@ def create_app(
         )
         session.add(installation)
         session.add(WorkerLease(installation_id=installation_id))
+        _record_audit(session, event_type="installation.created", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id, details={"name": payload.name})
         session.commit()
         # The plaintext credential is returned once and is never stored.
         return {"installation_id": installation_id, "access_token": access_token}
@@ -365,6 +510,7 @@ def create_app(
         if lease is not None:
             lease.active_job_id = None
             lease.lease_expires_at = None
+        _record_audit(session, event_type="installation.revoked", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id)
         session.commit()
         return {"revoked": True}
 
@@ -389,6 +535,7 @@ def create_app(
         )
         session.add(job)
         session.add(JobAssignment(job_id=job_id, installation_id=installation.id))
+        _record_audit(session, event_type="job.created", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id, "command": payload.command})
         session.commit()
         return {"id": job_id, "status": "queued", "installation_id": installation.id}
 
@@ -411,8 +558,36 @@ def create_app(
             session.add(assignment)
         else:
             assignment.installation_id = installation.id
+        _record_audit(session, event_type="job.assigned", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id})
         session.commit()
         return {"id": job_id, "installation_id": installation.id, "status": job.status}
+
+    @app.get(
+        "/v1/admin/audit-events",
+        dependencies=[Depends(require_admin)],
+    )
+    def list_audit_events(
+        limit: int = Query(default=100, ge=1, le=500),
+        session: Session = Depends(get_session),
+    ):
+        events = session.scalars(
+            select(AuditEvent).order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(limit)
+        ).all()
+        return {
+            "events": [
+                {
+                    "id": event.id,
+                    "event_type": event.event_type,
+                    "actor_type": event.actor_type,
+                    "actor_id": event.actor_id,
+                    "target_type": event.target_type,
+                    "target_id": event.target_id,
+                    "details": json.loads(event.details_json),
+                    "created_at": event.created_at.isoformat(),
+                }
+                for event in events
+            ]
+        }
 
     @app.get("/v1/jobs/next")
     def next_job(_installation: str = Depends(require_addon), session: Session = Depends(get_session)):
@@ -469,6 +644,7 @@ def create_app(
             grant.installation_id = _installation
             grant.token_hash = _token_hash(lease_token)
             grant.expires_at = expires_at
+        _record_audit(session, event_type="job.leased", actor_type="installation", actor_id=_installation, target_type="job", target_id=job.id, details={"attempt": job.attempts, "lease_expires_at": expires_at.isoformat()})
         session.commit()
         return {
             "job": {
@@ -529,6 +705,7 @@ def create_app(
         job.lease_expires_at = None
         lease.active_job_id = None
         lease.lease_expires_at = None
+        _record_audit(session, event_type="job.result_accepted", actor_type="installation", actor_id=_installation, target_type="job", target_id=job_id, details={"status": payload.status})
         session.commit()
         return {"accepted": True, "result": result}
 
