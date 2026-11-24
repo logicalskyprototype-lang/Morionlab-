@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,10 +33,30 @@ class Base(DeclarativeBase):
     pass
 
 
+class Workspace(Base):
+    __tablename__ = "motionlab_workspaces"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkspaceCredential(Base):
+    __tablename__ = "motionlab_workspace_credentials"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Job(Base):
     __tablename__ = "motionlab_jobs"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, default="wsp_legacy", index=True)
     command: Mapped[str] = mapped_column(String(64), nullable=False)
     args_json: Mapped[str] = mapped_column(Text, nullable=False)
     authorization_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -51,6 +71,7 @@ class Installation(Base):
     __tablename__ = "motionlab_installations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, default="wsp_legacy", index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -92,6 +113,7 @@ class AuditEvent(Base):
     actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
     target_type: Mapped[str] = mapped_column(String(32), nullable=False)
     target_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=True, index=True)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
@@ -113,6 +135,7 @@ def _record_audit(
     target_type: str,
     target_id: str,
     details: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
 ) -> None:
     session.add(
         AuditEvent(
@@ -122,16 +145,46 @@ def _record_audit(
             actor_id=actor_id,
             target_type=target_type,
             target_id=target_id,
+            workspace_id=workspace_id,
             details_json=json.dumps(details or {}, separators=(",", ":"), sort_keys=True),
             created_at=_utcnow(),
         )
     )
 
 
+class WorkspaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Workspace name must contain 1-100 characters.")
+        return value
+
+
+class WorkspaceInstallationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 100:
+            raise ValueError("Installation name must contain 1-100 characters.")
+        return value
+
+
 class InstallationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    workspace_id: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -325,6 +378,20 @@ def create_app(
     if initialize_schema:
         Base.metadata.create_all(engine)
 
+    # Development/test databases created directly from metadata still need the
+    # explicit single-tenant adoption workspace used by the Alembic migration.
+    with SessionLocal() as bootstrap_session:
+        if bootstrap_session.get(Workspace, "wsp_legacy") is None:
+            bootstrap_session.add(
+                Workspace(
+                    id="wsp_legacy",
+                    name="Legacy workspace",
+                    status="active",
+                    created_at=_utcnow(),
+                )
+            )
+            bootstrap_session.commit()
+
     app = FastAPI(title="MotionLab Job API", version="0.2.0")
 
     app.state.rate_limit_cleanup_counter = 0
@@ -345,6 +412,13 @@ def create_app(
                             Installation.revoked_at.is_(None),
                         )
                     ) is not None
+                    if not valid_credential:
+                        valid_credential = auth_session.scalar(
+                            select(WorkspaceCredential.id).where(
+                                WorkspaceCredential.token_hash == _token_hash(supplied),
+                                WorkspaceCredential.revoked_at.is_(None),
+                            )
+                        ) is not None
             except SQLAlchemyError:
                 return JSONResponse(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -447,7 +521,29 @@ def create_app(
         )
         if installation is None or installation.revoked_at is not None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid add-on credentials.")
+        workspace = session.get(Workspace, installation.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Installation workspace is not active.")
         return installation.id
+
+    def require_workspace(
+        authorization: str | None = Header(default=None),
+        session: Session = Depends(get_session),
+    ):
+        supplied = _bearer_token(authorization)
+        if not supplied:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid workspace credentials.")
+        credential = session.scalar(
+            select(WorkspaceCredential).where(
+                WorkspaceCredential.token_hash == _token_hash(supplied)
+            )
+        )
+        if credential is None or credential.revoked_at is not None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid workspace credentials.")
+        workspace = session.get(Workspace, credential.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active.")
+        return workspace
 
     @app.get("/healthz")
     def health():
@@ -463,24 +559,92 @@ def create_app(
         return {"status": "ready", "service": "motionlab"}
 
     @app.post(
+        "/v1/admin/workspaces",
+        status_code=status.HTTP_201_CREATED,
+        dependencies=[Depends(require_admin)],
+    )
+    def create_workspace(payload: WorkspaceRequest, session: Session = Depends(get_session)):
+        workspace_id = "wsp_" + uuid.uuid4().hex
+        access_token = secrets.token_urlsafe(48)
+        workspace = Workspace(id=workspace_id, name=payload.name, status="active", created_at=_utcnow())
+        credential = WorkspaceCredential(
+            id=str(uuid.uuid4()), workspace_id=workspace_id,
+            token_hash=_token_hash(access_token), created_at=_utcnow(),
+        )
+        session.add_all([workspace, credential])
+        session.flush()
+        _record_audit(session, event_type="workspace.created", actor_type="admin", actor_id="admin",
+            target_type="workspace", target_id=workspace_id, details={"name": payload.name},
+            workspace_id=workspace_id)
+        session.commit()
+        return {"workspace_id": workspace_id, "access_token": access_token}
+
+    @app.post("/v1/admin/workspaces/{workspace_id}/credentials",
+        status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
+    def issue_workspace_credential(workspace_id: str, session: Session = Depends(get_session)):
+        workspace = session.get(Workspace, workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=404, detail="Active workspace not found.")
+        access_token = secrets.token_urlsafe(48)
+        credential = WorkspaceCredential(id=str(uuid.uuid4()), workspace_id=workspace_id,
+            token_hash=_token_hash(access_token), created_at=_utcnow())
+        session.add(credential)
+        _record_audit(session, event_type="workspace.credential_issued", actor_type="admin",
+            actor_id="admin", target_type="workspace", target_id=workspace_id,
+            workspace_id=workspace_id)
+        session.commit()
+        return {"credential_id": credential.id, "access_token": access_token}
+
+    @app.post("/v1/admin/workspace-credentials/{credential_id}/revoke",
+        dependencies=[Depends(require_admin)])
+    def revoke_workspace_credential(credential_id: str, session: Session = Depends(get_session)):
+        credential = session.get(WorkspaceCredential, credential_id)
+        if credential is None:
+            raise HTTPException(status_code=404, detail="Unknown workspace credential.")
+        if credential.revoked_at is None:
+            credential.revoked_at = _utcnow()
+            _record_audit(session, event_type="workspace.credential_revoked", actor_type="admin",
+                actor_id="admin", target_type="workspace", target_id=credential.workspace_id,
+                workspace_id=credential.workspace_id, details={"credential_id": credential.id})
+            session.commit()
+        return {"revoked": True}
+
+    @app.post("/v1/admin/workspaces/{workspace_id}/deactivate",
+        dependencies=[Depends(require_admin)])
+    def deactivate_workspace(workspace_id: str, session: Session = Depends(get_session)):
+        workspace = session.get(Workspace, workspace_id)
+        if workspace is None:
+            raise HTTPException(status_code=404, detail="Unknown workspace.")
+        if workspace.status != "inactive":
+            workspace.status = "inactive"
+            _record_audit(session, event_type="workspace.deactivated", actor_type="admin",
+                actor_id="admin", target_type="workspace", target_id=workspace_id,
+                workspace_id=workspace_id)
+            session.commit()
+        return {"deactivated": True}
+
+    @app.post(
         "/v1/admin/installations",
         status_code=status.HTTP_201_CREATED,
         dependencies=[Depends(require_admin)],
     )
     def create_installation(payload: InstallationRequest, session: Session = Depends(get_session)):
+        workspace_id = payload.workspace_id or "wsp_legacy"
+        workspace = session.get(Workspace, workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=404, detail="Active workspace not found.")
         installation_id = "ins_" + uuid.uuid4().hex
         access_token = secrets.token_urlsafe(32)
         installation = Installation(
-            id=installation_id,
-            name=payload.name,
-            token_hash=_token_hash(access_token),
-            created_at=_utcnow(),
+            id=installation_id, workspace_id=workspace_id, name=payload.name,
+            token_hash=_token_hash(access_token), created_at=_utcnow(),
         )
         session.add(installation)
         session.add(WorkerLease(installation_id=installation_id))
-        _record_audit(session, event_type="installation.created", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id, details={"name": payload.name})
+        _record_audit(session, event_type="installation.created", actor_type="admin",
+            actor_id="admin", target_type="installation", target_id=installation_id,
+            details={"name": payload.name}, workspace_id=workspace_id)
         session.commit()
-        # The plaintext credential is returned once and is never stored.
         return {"installation_id": installation_id, "access_token": access_token}
 
     @app.post(
@@ -510,7 +674,7 @@ def create_app(
         if lease is not None:
             lease.active_job_id = None
             lease.lease_expires_at = None
-        _record_audit(session, event_type="installation.revoked", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id)
+        _record_audit(session, event_type="installation.revoked", actor_type="admin", actor_id="admin", target_type="installation", target_id=installation_id, workspace_id=installation.workspace_id)
         session.commit()
         return {"revoked": True}
 
@@ -523,9 +687,13 @@ def create_app(
         installation = session.get(Installation, payload.installation_id)
         if installation is None or installation.revoked_at is not None:
             raise HTTPException(status_code=404, detail="Active target installation not found.")
+        workspace = session.get(Workspace, installation.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=403, detail="Target installation workspace is not active.")
         job_id = "ml_" + uuid.uuid4().hex
         job = Job(
             id=job_id,
+            workspace_id=installation.workspace_id,
             command=payload.command,
             args_json=json.dumps(payload.args, separators=(",", ":"), sort_keys=True),
             authorization_json=json.dumps(payload.authorization, separators=(",", ":"), sort_keys=True),
@@ -535,7 +703,7 @@ def create_app(
         )
         session.add(job)
         session.add(JobAssignment(job_id=job_id, installation_id=installation.id))
-        _record_audit(session, event_type="job.created", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id, "command": payload.command})
+        _record_audit(session, event_type="job.created", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id, "command": payload.command}, workspace_id=installation.workspace_id)
         session.commit()
         return {"id": job_id, "status": "queued", "installation_id": installation.id}
 
@@ -552,13 +720,15 @@ def create_app(
         installation = session.get(Installation, payload.installation_id)
         if installation is None or installation.revoked_at is not None:
             raise HTTPException(status_code=404, detail="Active target installation not found.")
+        if installation.workspace_id != job.workspace_id:
+            raise HTTPException(status_code=409, detail="Job and installation must belong to the same workspace.")
         assignment = session.get(JobAssignment, job_id)
         if assignment is None:
             assignment = JobAssignment(job_id=job_id, installation_id=installation.id)
             session.add(assignment)
         else:
             assignment.installation_id = installation.id
-        _record_audit(session, event_type="job.assigned", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id})
+        _record_audit(session, event_type="job.assigned", actor_type="admin", actor_id="admin", target_type="job", target_id=job_id, details={"installation_id": installation.id}, workspace_id=job.workspace_id)
         session.commit()
         return {"id": job_id, "installation_id": installation.id, "status": job.status}
 
@@ -589,6 +759,122 @@ def create_app(
             ]
         }
 
+    @app.post("/v1/workspaces/installations", status_code=status.HTTP_201_CREATED)
+    def create_workspace_installation(
+        payload: WorkspaceInstallationRequest,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installation_id = "ins_" + uuid.uuid4().hex
+        access_token = secrets.token_urlsafe(32)
+        installation = Installation(
+            id=installation_id, workspace_id=workspace.id, name=payload.name,
+            token_hash=_token_hash(access_token), created_at=_utcnow(),
+        )
+        session.add(installation)
+        session.add(WorkerLease(installation_id=installation_id))
+        _record_audit(
+            session, event_type="installation.created", actor_type="workspace",
+            actor_id=workspace.id, target_type="installation", target_id=installation_id,
+            details={"name": payload.name}, workspace_id=workspace.id,
+        )
+        session.commit()
+        return {"installation_id": installation_id, "access_token": access_token}
+
+    @app.get("/v1/workspaces/installations")
+    def list_workspace_installations(
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installations = session.scalars(
+            select(Installation).where(Installation.workspace_id == workspace.id)
+            .order_by(Installation.created_at.desc(), Installation.id.desc())
+        ).all()
+        return {"installations": [
+            {"installation_id": item.id, "name": item.name,
+             "created_at": item.created_at.isoformat(),
+             "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None}
+            for item in installations
+        ]}
+
+    @app.post("/v1/workspaces/installations/{installation_id}/revoke")
+    def revoke_workspace_installation(
+        installation_id: str,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installation = session.get(Installation, installation_id)
+        if installation is None or installation.workspace_id != workspace.id:
+            raise HTTPException(status_code=404, detail="Unknown installation.")
+        if installation.revoked_at is not None:
+            return {"revoked": True}
+        installation.revoked_at = _utcnow()
+        assignments = session.scalars(
+            select(JobAssignment).where(JobAssignment.installation_id == installation_id)
+        ).all()
+        for assignment in assignments:
+            job = session.get(Job, assignment.job_id)
+            if job is not None and job.workspace_id == workspace.id and job.status in {"queued", "leased"}:
+                job.status = "queued"
+                job.lease_expires_at = None
+                grant = session.get(JobLeaseGrant, job.id)
+                if grant is not None:
+                    session.delete(grant)
+                session.delete(assignment)
+        lease = session.get(WorkerLease, installation_id)
+        if lease is not None:
+            lease.active_job_id = None
+            lease.lease_expires_at = None
+        _record_audit(
+            session, event_type="installation.revoked", actor_type="workspace",
+            actor_id=workspace.id, target_type="installation", target_id=installation_id,
+            workspace_id=workspace.id,
+        )
+        session.commit()
+        return {"revoked": True}
+
+    @app.post("/v1/workspaces/jobs", status_code=status.HTTP_201_CREATED)
+    def enqueue_workspace_job(
+        payload: JobRequest,
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        installation = session.get(Installation, payload.installation_id)
+        if installation is None or installation.revoked_at is not None or installation.workspace_id != workspace.id:
+            raise HTTPException(status_code=404, detail="Active target installation not found in this workspace.")
+        job_id = "ml_" + uuid.uuid4().hex
+        job = Job(
+            id=job_id, workspace_id=workspace.id, command=payload.command,
+            args_json=json.dumps(payload.args, separators=(",", ":"), sort_keys=True),
+            authorization_json=json.dumps(payload.authorization, separators=(",", ":"), sort_keys=True),
+            status="queued", attempts=0, created_at=_utcnow(),
+        )
+        session.add(job)
+        session.add(JobAssignment(job_id=job_id, installation_id=installation.id))
+        _record_audit(session, event_type="job.created", actor_type="workspace",
+            actor_id=workspace.id, target_type="job", target_id=job_id,
+            details={"installation_id": installation.id, "command": payload.command},
+            workspace_id=workspace.id)
+        session.commit()
+        return {"id": job_id, "status": "queued", "installation_id": installation.id}
+
+    @app.get("/v1/workspaces/audit-events")
+    def list_workspace_audit_events(
+        limit: int = Query(default=100, ge=1, le=500),
+        workspace: Workspace = Depends(require_workspace),
+        session: Session = Depends(get_session),
+    ):
+        events = session.scalars(
+            select(AuditEvent).where(AuditEvent.workspace_id == workspace.id)
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc()).limit(limit)
+        ).all()
+        return {"events": [
+            {"id": event.id, "event_type": event.event_type, "actor_type": event.actor_type,
+             "actor_id": event.actor_id, "target_type": event.target_type, "target_id": event.target_id,
+             "details": json.loads(event.details_json), "created_at": event.created_at.isoformat()}
+            for event in events
+        ]}
+
     @app.get("/v1/jobs/next")
     def next_job(_installation: str = Depends(require_addon), session: Session = Depends(get_session)):
         now = _utcnow()
@@ -602,12 +888,16 @@ def create_app(
         if lease.active_job_id and _is_future(lease.lease_expires_at, now):
             return {"job": None}
 
+        installation = session.get(Installation, _installation)
+        if installation is None:
+            raise HTTPException(status_code=401, detail="Invalid add-on credentials.")
         assigned_job_ids = select(JobAssignment.job_id).where(
             JobAssignment.installation_id == _installation
         )
         statement = (
             select(Job)
             .where(
+                Job.workspace_id == installation.workspace_id,
                 Job.id.in_(assigned_job_ids),
                 (Job.status == "queued")
                 | ((Job.status == "leased") & (Job.lease_expires_at <= now)),
@@ -644,7 +934,7 @@ def create_app(
             grant.installation_id = _installation
             grant.token_hash = _token_hash(lease_token)
             grant.expires_at = expires_at
-        _record_audit(session, event_type="job.leased", actor_type="installation", actor_id=_installation, target_type="job", target_id=job.id, details={"attempt": job.attempts, "lease_expires_at": expires_at.isoformat()})
+        _record_audit(session, event_type="job.leased", actor_type="installation", actor_id=_installation, target_type="job", target_id=job.id, details={"attempt": job.attempts, "lease_expires_at": expires_at.isoformat()}, workspace_id=job.workspace_id)
         session.commit()
         return {
             "job": {
@@ -673,7 +963,9 @@ def create_app(
         )
         job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
         assignment = session.get(JobAssignment, job_id)
-        if job is None or assignment is None or assignment.installation_id != _installation:
+        installation = session.get(Installation, _installation)
+        if (job is None or assignment is None or assignment.installation_id != _installation
+            or installation is None or job.workspace_id != installation.workspace_id):
             raise HTTPException(status_code=404, detail="Unknown job.")
         grant = session.get(JobLeaseGrant, job_id)
         if (
@@ -705,7 +997,7 @@ def create_app(
         job.lease_expires_at = None
         lease.active_job_id = None
         lease.lease_expires_at = None
-        _record_audit(session, event_type="job.result_accepted", actor_type="installation", actor_id=_installation, target_type="job", target_id=job_id, details={"status": payload.status})
+        _record_audit(session, event_type="job.result_accepted", actor_type="installation", actor_id=_installation, target_type="job", target_id=job_id, details={"status": payload.status}, workspace_id=job.workspace_id)
         session.commit()
         return {"accepted": True, "result": result}
 

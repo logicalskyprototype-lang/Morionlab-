@@ -1,4 +1,4 @@
-# MotionLab v0.2 architecture
+# MotionLab v0.3 architecture
 
 ## Scope
 
@@ -6,15 +6,16 @@ The first increment proves a constrained Blender execution path. It does not imp
 
 ## Runtime flow
 
-1. Grey or another authorized client requests work through the MotionLab service.
-2. The service authenticates the Blender add-on and offers only approved jobs.
-3. The add-on makes outbound HTTPS requests. No inbound laptop port is opened.
-4. A network worker validates and queues the received job. It must not access Blender data.
-5. A Blender application timer drains at most ten jobs per tick on Blender's main thread.
-6. The local protocol and permission checks run again before an allowlisted operation executes.
-7. The operation result remains local and pending; it is not sent to the service yet.
-8. Blender's `save_post` handler releases results only after a successful `.blend` save has persisted both the scene mutation and project-wide idempotency ledger.
-9. The network worker submits the saved result. If the process stops before the service accepts it, the backend lease expires and the job may be redelivered; the persisted ledger returns the original result without repeating the scene mutation.
+1. Grey or another trusted server-side orchestrator authenticates the human user and checks workspace membership and permissions.
+2. The orchestrator uses a workspace-scoped service credential to request work from MotionLab. MotionLab derives workspace identity from that credential and validates the target installation belongs to the same workspace.
+3. The service authenticates the Blender add-on and offers only jobs assigned to that installation within its workspace.
+4. The add-on makes outbound HTTPS requests. No inbound laptop port is opened.
+5. A network worker validates and queues the received job. It must not access Blender data.
+6. A Blender application timer drains at most ten jobs per tick on Blender's main thread.
+7. The local protocol and permission checks run again before an allowlisted operation executes.
+8. The operation result remains local and pending; it is not sent to the service yet.
+9. Blender's `save_post` handler releases results only after a successful `.blend` save has persisted both the scene mutation and project-wide idempotency ledger.
+10. The network worker submits the saved result. If the process stops before the service accepts it, the backend lease expires and the job may be redelivered; the persisted ledger returns the original result without repeating the scene mutation.
 
 ## First command
 
@@ -39,7 +40,7 @@ Each job must contain an id, command, args and authorization metadata. The local
 - The add-on carries the lease token with the save-gated result. Both endpoints require HTTPS in deployment; the connector rejects non-HTTPS URLs and redirects.
 - The admin credential is server-only. A trusted server-side caller must verify user identity, workspace ownership and explicit approval before enqueueing a job.
 
-The v0.2 FastAPI service is implemented in `backend/app.py` and covered by SQLite API tests plus PostgreSQL concurrency integration tests. It is not deployed. Existing databases require a reviewed schema migration before upgrading; `create_all` is not a production migration strategy.
+The v0.3 FastAPI service is implemented in `backend/app.py` and covered by SQLite API tests plus PostgreSQL concurrency integration tests. Workspace, workspace credential, installation, job, and audit ownership are enforced server-side. Workspace credentials are for trusted server-to-server use only; the web frontend and Blender add-on must never receive them. End-user authentication, membership/role checks, and verifiable approval records remain the responsibility of the trusted Grey/orchestrator integration. The service is not deployed. Existing databases require the reviewed Alembic migration before upgrading; `create_all` is not a production migration strategy.
 
 ## Threading and safety
 

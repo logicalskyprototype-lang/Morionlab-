@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import Base, Installation, WorkerLease, create_app
+from backend.app import Base, Installation, Workspace, WorkerLease, create_app
 
 DATABASE_URL = os.getenv("MOTIONLAB_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration database not configured")
@@ -24,6 +24,13 @@ def app():
     )
     Base.metadata.drop_all(application.state.engine)
     Base.metadata.create_all(application.state.engine)
+    from datetime import datetime, timezone
+    with application.state.session_factory() as session:
+        session.add(Workspace(
+            id="wsp_legacy", name="Legacy workspace", status="active",
+            created_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
     yield application
     application.state.engine.dispose()
 
@@ -135,6 +142,13 @@ def test_postgres_rate_limit_counts_concurrent_requests_atomically():
     )
     Base.metadata.drop_all(application.state.engine)
     Base.metadata.create_all(application.state.engine)
+    from datetime import datetime, timezone
+    with application.state.session_factory() as session:
+        session.add(Workspace(
+            id="wsp_legacy", name="Legacy workspace", status="active",
+            created_at=datetime.now(timezone.utc),
+        ))
+        session.commit()
     workers = 12
     barrier = Barrier(workers)
 
@@ -151,3 +165,42 @@ def test_postgres_rate_limit_counts_concurrent_requests_atomically():
         assert statuses.count(429) == 8
     finally:
         application.state.engine.dispose()
+
+
+
+def test_postgres_workspace_polling_keeps_jobs_inside_tenant_boundaries(app):
+    with TestClient(app) as client:
+        workspace_a = client.post("/v1/admin/workspaces", headers=ADMIN, json={"name": "Tenant A"}).json()
+        workspace_b = client.post("/v1/admin/workspaces", headers=ADMIN, json={"name": "Tenant B"}).json()
+        worker_a = client.post(
+            "/v1/admin/installations", headers=ADMIN,
+            json={"name": "A worker", "workspace_id": workspace_a["workspace_id"]},
+        ).json()
+        worker_b = client.post(
+            "/v1/admin/installations", headers=ADMIN,
+            json={"name": "B worker", "workspace_id": workspace_b["workspace_id"]},
+        ).json()
+        token_a = {"Authorization": "Bearer " + workspace_a["access_token"]}
+        token_b = {"Authorization": "Bearer " + workspace_b["access_token"]}
+        payload_a = {
+            "installation_id": worker_a["installation_id"], "command": "create_cube",
+            "args": {"name": "Tenant A"}, "authorization": {"approved": True, "scopes": ["scene.write"]},
+        }
+        payload_b = {
+            "installation_id": worker_b["installation_id"], "command": "create_cube",
+            "args": {"name": "Tenant B"}, "authorization": {"approved": True, "scopes": ["scene.write"]},
+        }
+        job_a = client.post("/v1/workspaces/jobs", headers=token_a, json=payload_a).json()["id"]
+        job_b = client.post("/v1/workspaces/jobs", headers=token_b, json=payload_b).json()["id"]
+        addon_a = {"Authorization": "Bearer " + worker_a["access_token"]}
+        addon_b = {"Authorization": "Bearer " + worker_b["access_token"]}
+
+    def poll(headers):
+        with TestClient(app) as client:
+            return client.get("/v1/jobs/next", headers=headers).json()["job"]["id"]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(poll, addon_a)
+        future_b = pool.submit(poll, addon_b)
+        assert future_a.result(timeout=10) == job_a
+        assert future_b.result(timeout=10) == job_b
