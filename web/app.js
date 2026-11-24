@@ -38,7 +38,7 @@ function projectCard(project) {
 
 function overview() {
   return `<div class="welcome-row">
-    <div><div class="eyebrow accent">MONDAY, NOVEMBER 24, 2026</div><h1>Make something <span>remarkable.</span></h1><p class="intro">Your creative engineering space. Pick up where you left off or start with a new idea.</p></div>
+    <div><div class="eyebrow accent">${new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date()).toUpperCase()}</div><h1>Make something <span>remarkable.</span></h1><p class="intro">Your creative engineering space. Pick up where you left off or start with a new idea.</p></div>
     <button class="primary-button" id="new-project"><span>＋</span> New project</button>
   </div>
   <div class="metrics-grid">
