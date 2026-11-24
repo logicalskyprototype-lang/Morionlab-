@@ -15,7 +15,25 @@ depends_on = None
 
 def upgrade():
     bind = op.get_bind()
-    existing = set(inspect(bind).get_table_names())
+    inspector = inspect(bind)
+    existing = set(inspector.get_table_names())
+    required_columns = {
+        "motionlab_jobs": {"id", "command", "args_json", "authorization_json", "status", "lease_expires_at", "attempts", "result_json", "created_at"},
+        "motionlab_installations": {"id", "name", "token_hash", "created_at", "revoked_at"},
+        "motionlab_job_assignments": {"job_id", "installation_id"},
+        "motionlab_worker_leases": {"installation_id", "active_job_id", "lease_expires_at"},
+        "motionlab_job_lease_grants": {"job_id", "installation_id", "token_hash", "expires_at"},
+    }
+    # Never silently adopt a partial or incompatible table. Fail before making
+    # any schema changes so an operator can inspect and repair it deliberately.
+    for table, required in required_columns.items():
+        if table in existing:
+            actual = {column["name"] for column in inspector.get_columns(table)}
+            missing = required - actual
+            if missing:
+                raise RuntimeError(
+                    f"Existing table {table} has missing required columns: {', '.join(sorted(missing))}"
+                )
 
     # Never stamp an existing but structurally incompatible database as upgraded.
     expected_columns = {
@@ -92,7 +110,7 @@ def upgrade():
     # create_all() from earlier development releases created these indexes.
     # Add missing indexes when adopting an existing database.
     tables = {
-        table: {item["name"] for item in inspect(bind).get_indexes(table)}
+        table: {item["name"] for item in inspector.get_indexes(table)}
         for table in (
             "motionlab_jobs",
             "motionlab_installations",
