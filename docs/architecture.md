@@ -36,6 +36,8 @@ The service is not implemented in this repository increment. The connector is a 
 
 - The network worker performs HTTP and queue operations only.
 - The local command queue is bounded to 100 pending jobs and never blocks the network worker.
+- The outbound result queue is also bounded to 100 entries. When it is full or a result submission fails, the add-on stops accepting further scene work until result delivery recovers.
+- HTTPS request timeouts default to two seconds so add-on shutdown has a bounded wait. Shutdown does not attempt unlimited result retries; unacknowledged jobs remain subject to the service lease/recovery policy.
 - Blender's main-thread timer processes at most ten jobs per tick to keep the UI responsive under load.
 - All `bpy` calls run from Blender's main-thread timer callback.
 - TLS certificate verification remains enabled by the standard HTTPS client.
