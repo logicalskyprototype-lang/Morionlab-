@@ -83,7 +83,7 @@ def test_workspace_migration_adopts_existing_legacy_rows_without_losing_data(tmp
                 text("SELECT workspace_id FROM motionlab_jobs WHERE id = 'ml_existing'")
             ).scalar_one()
             assert job == "wsp_legacy"
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0004_workspace_projects"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_public_identity"
     finally:
         engine.dispose()
 
