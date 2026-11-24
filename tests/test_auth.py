@@ -187,3 +187,15 @@ def test_invalid_email_is_rejected(tmp_path):
         json={"email": "not-an-email"},
     )
     assert response.status_code == 422
+
+
+def test_backend_serves_browser_app_and_assets_same_origin(tmp_path):
+    client, _ = auth_client(tmp_path)
+    root = client.get("/")
+    script = client.get("/web/app.js")
+    styles = client.get("/web/styles.css")
+    assert root.status_code == 200
+    assert "MotionLab" in root.text
+    assert script.status_code == 200
+    assert "bootstrapAuth" in script.text
+    assert styles.status_code == 200
