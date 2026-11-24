@@ -65,6 +65,10 @@ with tempfile.TemporaryDirectory() as temp_dir:
 
     assert len(recording_worker.results) == 1
     assert recording_worker.results[0][0] == job["id"]
+
+    # The save handler must survive opening another .blend project.
+    bpy.ops.wm.open_mainfile(filepath=scene_path)
+    assert addon._on_save_post in bpy.app.handlers.save_post
     addon._WORKER = None
     motionlab_blender.unregister()
 
@@ -116,6 +120,7 @@ assert len(bpy.context.scene.objects) == 0
 print("MOTIONLAB_ADDON_REGISTRATION=PASS")
 print("MOTIONLAB_RESULT_HELD_BEFORE_SAVE=PASS")
 print("MOTIONLAB_RESULT_RELEASED_AFTER_SAVE=PASS")
+print("MOTIONLAB_SAVE_HANDLER_PERSISTS_AFTER_PROJECT_LOAD=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_SAME_SESSION=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_AFTER_RELOAD=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_CROSS_SCENE=PASS")
