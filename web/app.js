@@ -86,6 +86,8 @@ async function bootstrapAuth() {
       const user = await api("/v1/auth/me");
       authState.email = user.email;
       authState.workspaceName = user.workspace_name;
+      document.querySelector(".workspace-copy strong").textContent = user.workspace_name;
+      document.querySelector("#profile-email").textContent = user.email;
       document.querySelector("#app").style.display = "";
       await loadProjects();
       render("overview");
@@ -96,12 +98,12 @@ let selectedProject = projects[0];
 
 function projectCard(project) {
   return `<article class="project-card">
-    <button class="project-preview ${project.color}" data-open-project="${project.id}" aria-label="Open ${project.name}">
+    <button class="project-preview ${project.color}" data-open-project="${project.id}" aria-label="Open ${escapeHtml(project.name)}">
       <span class="preview-grid"></span><span class="preview-symbol">${project.icon}</span>
       <span class="preview-open">↗</span>
-      <span class="preview-id">${project.id}</span>
+      <span class="preview-id">${escapeHtml(project.id)}</span>
     </button>
-    <div class="project-meta"><div><span class="eyebrow">${project.type}</span><h3>${project.name}</h3></div><button class="more-button" aria-label="More options">•••</button></div>
+    <div class="project-meta"><div><span class="eyebrow">${escapeHtml(project.type)}</span><h3>${escapeHtml(project.name)}</h3></div><button class="more-button" aria-label="More options">•••</button></div>
     <div class="project-foot"><span class="project-state"><i></i>${project.state}</span><span>Edited ${project.updated}</span></div>
   </article>`;
 }
@@ -112,7 +114,7 @@ function overview() {
     <button class="primary-button" id="new-project"><span>＋</span> New project</button>
   </div>
   <div class="metrics-grid">
-    <div class="metric-card"><div class="metric-label">Total projects <span>↗</span></div><div class="metric-value">04</div><div class="metric-note">Across all creative work</div></div>
+    <div class="metric-card"><div class="metric-label">Total projects <span>↗</span></div><div class="metric-value">${String(projects.length).padStart(2, "0")}</div><div class="metric-note">Across all creative work</div></div>
     <div class="metric-card"><div class="metric-label">Active sessions <span class="metric-glyph">◷</span></div><div class="metric-value">—</div><div class="metric-note">No active sessions</div></div>
     <div class="metric-card"><div class="metric-label">Blender connections <span class="metric-glyph">◇</span></div><div class="metric-value">00 <small>/ 03</small></div><div class="metric-note"><span class="muted-dot"></span> No devices connected</div></div>
     <div class="metric-card"><div class="metric-label">Cloud renders <span class="metric-glyph">▤</span></div><div class="metric-value">—</div><div class="metric-note">Remote rendering not enabled</div></div>
@@ -131,7 +133,7 @@ function overview() {
       <button class="secondary-button" data-page="connections">Set up workspace <span>↗</span></button>
     </div>
   </section>
-  <p class="demo-note"><span>ⓘ</span> Preview workspace · Project cards show sample content. Saving and cloud sync will be enabled when account and project APIs are connected.</p>`;
+  <p class="demo-note"><span>ⓘ</span> Private workspace · Projects are loaded from your MotionLab account.</p>`;
 }
 
 function projectsPage() {
