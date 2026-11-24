@@ -1,6 +1,6 @@
 # Workspace authorization design
 
-Status: design baseline for the workspace-authorization implementation.
+Status: implemented on `feat/workspace-authorization`; CI passed. Awaiting code review and explicit merge approval.
 
 ## Scope
 
@@ -69,3 +69,17 @@ These require a separate identity and product design. The workspace credential i
 ## Deployment boundary
 
 This change must not deploy or mutate a hosted database. Before deployment, rehearse the migration against a restored backup and verify the legacy-workspace adoption plan. End-user identity and membership checks must be implemented in the trusted orchestrator before enabling customer traffic.
+
+## Implemented API surface
+
+- `POST /v1/admin/workspaces`: create a workspace and issue its first workspace credential once.
+- `POST /v1/admin/workspaces/{workspace_id}/credentials`: issue an additional credential.
+- `POST /v1/admin/workspace-credentials/{credential_id}/revoke`: revoke a workspace credential.
+- `POST /v1/admin/workspaces/{workspace_id}/deactivate`: block new workspace API actions and worker leases.
+- `POST /v1/workspaces/installations`, `GET /v1/workspaces/installations`, and `POST /v1/workspaces/installations/{installation_id}/revoke`: manage installations inside the authenticated workspace.
+- `POST /v1/workspaces/jobs`: enqueue a validated job for an installation in the authenticated workspace.
+- `GET /v1/workspaces/audit-events`: read only the authenticated workspace's audit history.
+
+Workspace credentials are service-to-service secrets. They are not intended for the browser application, mobile app, or Blender add-on. The trusted Grey/orchestrator service must hold them, authenticate the human user, check membership and permissions, and validate explicit approval before making workspace API calls. Installation credentials remain separate and are accepted only by Blender worker endpoints.
+
+The Alembic migration is `0003_workspace_authorization`. It creates the legacy workspace and adopts existing installations, jobs, and audit history into it. Fresh-schema, legacy-data-adoption, API isolation, and PostgreSQL tenant-polling tests are included.
