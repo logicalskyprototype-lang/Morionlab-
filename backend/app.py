@@ -490,6 +490,7 @@ def create_app(
     initialize_schema: bool | None = None,
     rate_limit_requests: int = 120,
     rate_limit_window_seconds: int = 60,
+    email_sender=None,
 ) -> FastAPI:
     database_url = database_url or os.getenv("DATABASE_URL", "sqlite:///./motionlab.db")
     admin_token = admin_token if admin_token is not None else os.getenv("MOTIONLAB_ADMIN_TOKEN")
@@ -706,6 +707,7 @@ def create_app(
             outbox=app.state.magic_link_outbox,
             production=production,
             app_origin=os.getenv("MOTIONLAB_APP_ORIGIN"),
+            email_sender=email_sender,
         )
     )
 
