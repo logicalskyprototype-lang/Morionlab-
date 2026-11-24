@@ -41,15 +41,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v5
       - name: Install Blender 3.6.23
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 3 \
-            https://download.blender.org/release/Blender3.6/blender-3.6.23-linux-x64.tar.xz \
-            --output /tmp/blender.tar.xz
-          mkdir -p "${{ runner.temp }}/blender"
-          tar -xf /tmp/blender.tar.xz -C "${{ runner.temp }}/blender" --strip-components=1
-          echo "${{ runner.temp }}/blender" >> "$GITHUB_PATH"
+        uses: BradyAJohnston/setup-blender@1006ec809db1af1422bd1197e107e2c4d368d81e
+        with:
+          version: "3.6.23"
       - name: Verify Blender version
         run: blender --background --python-exit-code 1 --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string); assert bpy.app.version[:2] == (3, 6)"
       - name: Run Blender smoke test
