@@ -35,7 +35,7 @@ def request_link(client, email):
 
 def get_token(app, index=-1):
     link = app.state.magic_link_outbox[index]["url"]
-    return parse_qs(urlsplit(link).query)["auth_token"][0]
+    return parse_qs(urlsplit(link).fragment)["auth_token"][0]
 
 
 def verify(client, token):
@@ -199,3 +199,12 @@ def test_backend_serves_browser_app_and_assets_same_origin(tmp_path):
     assert script.status_code == 200
     assert "bootstrapAuth" in script.text
     assert styles.status_code == 200
+
+
+def test_magic_link_token_is_only_in_url_fragment(tmp_path):
+    client, app = auth_client(tmp_path)
+    request_link(client, "fragment@example.com")
+    link = app.state.magic_link_outbox[-1]["url"]
+    parsed = urlsplit(link)
+    assert parsed.query == ""
+    assert parsed.fragment.startswith("auth_token=")
