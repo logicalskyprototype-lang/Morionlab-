@@ -43,7 +43,7 @@ function showLogin(message = "") {
     button.disabled = true;
     message.textContent = "Requesting your secure sign-in link…";
     try {
-      const result = await api("/v1/auth/magic-link", { method: "POST", headers: { "Origin": location.origin }, body: JSON.stringify({ email: document.querySelector("#auth-email").value }) });
+      const result = await api("/v1/auth/magic-link", { method: "POST", body: JSON.stringify({ email: document.querySelector("#auth-email").value }) });
       message.textContent = result.message;
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
@@ -68,7 +68,7 @@ async function bootstrapAuth() {
   if (token) {
     history.replaceState({}, "", location.pathname + location.hash);
     try {
-      await api("/v1/auth/verify", { method: "POST", headers: { "Origin": location.origin }, body: JSON.stringify({ token }) });
+      await api("/v1/auth/verify", { method: "POST", body: JSON.stringify({ token }) });
       authState.status = "authenticated";
     } catch (error) {
       authState.status = "anonymous";
@@ -198,7 +198,7 @@ function openModal() {
     const confirmButton = modalRoot.querySelector("#create-project-confirm");
     confirmButton.disabled = true;
     confirmButton.textContent = "Saving…";
-    api("/v1/app/projects", { method: "POST", headers: { "Origin": location.origin }, body: JSON.stringify({ name, project_type: selectedTemplate }) })
+    api("/v1/app/projects", { method: "POST", body: JSON.stringify({ name, project_type: selectedTemplate }) })
       .then(async () => { modalRoot.innerHTML = ""; await loadProjects(); render("projects"); })
       .catch(error => { confirmButton.disabled = false; confirmButton.textContent = "Continue →"; modalRoot.querySelector(".modal-hint").textContent = error.message; });
   });
