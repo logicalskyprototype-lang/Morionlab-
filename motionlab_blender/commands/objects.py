@@ -53,13 +53,15 @@ def _cube_result(obj):
 
 
 def create_cube(args, job_id):
-    """Create one cube per job ID and persist its result in the active scene."""
+    """Create one cube per job ID and persist its result in the .blend project."""
     scene = bpy.context.scene
     fingerprint = _payload_fingerprint(args)
     ledger = _load_ledger()
     prior = ledger.get(job_id)
 
     if prior is not None:
+        if not isinstance(prior, dict) or "payload_sha256" not in prior or "result" not in prior:
+            raise RuntimeError("MotionLab project idempotency record is invalid.")
         if prior.get("payload_sha256") != fingerprint:
             raise ValueError(
                 "Job ID was already used with a different command payload."
@@ -67,7 +69,7 @@ def create_cube(args, job_id):
         # Return the recorded outcome even if a user later deletes the object.
         return prior["result"]
 
-    # Recover the ledger if an object marker exists but the scene record is absent.
+    # Recover the ledger if an object marker exists but the project record is absent.
     for existing in bpy.data.objects:
         if existing.get(_JOB_MARKER) == job_id:
             if existing.get(_PAYLOAD_MARKER) != fingerprint:
@@ -98,7 +100,7 @@ def create_cube(args, job_id):
         "payload_sha256": fingerprint,
         "result": result,
     }
-    _save_ledger(scene, ledger)
+    _save_ledger(ledger)
     return result
 
 
