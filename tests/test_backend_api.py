@@ -194,3 +194,87 @@ def test_revoking_installation_releases_its_pending_jobs(tmp_path):
     with app.state.session_factory() as session:
         assert session.get(Job, job_id).status == "queued"
         assert session.get(JobAssignment, job_id) is None
+
+
+def test_unknown_job_and_mismatched_result_ids_are_rejected(tmp_path):
+    client, _, _, addon = client_for(tmp_path)
+    unknown = client.post(
+        "/v1/jobs/unknown/result",
+        headers=addon,
+        json={"job_id": "unknown", "lease_token": "unused", "status": "completed"},
+    )
+    assert unknown.status_code == 404
+
+    job_id = enqueue(client, client.post(
+        "/v1/admin/installations", headers=ADMIN, json={"name": "Mismatch worker"}
+    ).json()["installation_id"])
+    mismatch = client.post(
+        f"/v1/jobs/{job_id}/result",
+        headers=addon,
+        json={"job_id": "different", "lease_token": "unused", "status": "completed"},
+    )
+    assert mismatch.status_code == 400
+
+
+def test_result_rejects_non_finite_and_oversized_output(tmp_path):
+    client, _, installation, addon = client_for(tmp_path)
+    job_id = enqueue(client, installation["installation_id"])
+    leased = client.get("/v1/jobs/next", headers=addon).json()["job"]
+
+    invalid_json = (
+        '{"job_id":"' + job_id + '","lease_token":"' + leased["lease_token"] + '",'
+        '"status":"completed","output":{"value":NaN}}'
+    )
+    invalid = client.post(
+        f"/v1/jobs/{job_id}/result",
+        content=invalid_json,
+        headers={**addon, "Content-Type": "application/json"},
+    )
+    assert invalid.status_code == 422
+
+    oversized = client.post(
+        f"/v1/jobs/{job_id}/result",
+        headers=addon,
+        json={
+            "job_id": job_id,
+            "lease_token": leased["lease_token"],
+            "status": "completed",
+            "output": {"value": "x" * (256 * 1024)},
+        },
+    )
+    assert oversized.status_code == 422
+
+
+def test_conflicting_result_retry_is_rejected(tmp_path):
+    client, _, installation, addon = client_for(tmp_path)
+    job_id = enqueue(client, installation["installation_id"])
+    leased = client.get("/v1/jobs/next", headers=addon).json()["job"]
+    first = {
+        "job_id": job_id,
+        "lease_token": leased["lease_token"],
+        "status": "completed",
+        "output": {"object_name": "Cube"},
+    }
+    changed = {
+        "job_id": job_id,
+        "lease_token": leased["lease_token"],
+        "status": "completed",
+        "output": {"object_name": "Different"},
+    }
+    assert client.post(f"/v1/jobs/{job_id}/result", headers=addon, json=first).status_code == 200
+    assert client.post(f"/v1/jobs/{job_id}/result", headers=addon, json=changed).status_code == 409
+
+
+def test_extremely_large_numbers_are_rejected_without_server_error(tmp_path):
+    client, _, installation, _ = client_for(tmp_path)
+    huge_integer = 10 ** 400
+    for args in (
+        {"size": huge_integer},
+        {"location": [0, huge_integer, 0]},
+    ):
+        response = client.post(
+            "/v1/admin/jobs",
+            json=approved_job(installation["installation_id"], args=args),
+            headers=ADMIN,
+        )
+        assert response.status_code == 422
