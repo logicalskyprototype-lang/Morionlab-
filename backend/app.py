@@ -799,12 +799,16 @@ def create_app(
         if lease.active_job_id and _is_future(lease.lease_expires_at, now):
             return {"job": None}
 
+        installation = session.get(Installation, _installation)
+        if installation is None:
+            raise HTTPException(status_code=401, detail="Invalid add-on credentials.")
         assigned_job_ids = select(JobAssignment.job_id).where(
             JobAssignment.installation_id == _installation
         )
         statement = (
             select(Job)
             .where(
+                Job.workspace_id == installation.workspace_id,
                 Job.id.in_(assigned_job_ids),
                 (Job.status == "queued")
                 | ((Job.status == "leased") & (Job.lease_expires_at <= now)),
