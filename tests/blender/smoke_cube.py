@@ -23,6 +23,7 @@ job = validate_job({
     "command": "create_cube",
     "args": {"name": "MotionLab CI Cube", "size": 2, "location": [1, 2, 3]},
     "authorization": {"approved": True, "scopes": ["scene.write"]},
+    "lease_token": "lease-token-for-smoke-test",
 })
 
 

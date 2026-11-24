@@ -1,4 +1,4 @@
-# MotionLab v0.1 architecture
+# MotionLab v0.2 architecture
 
 ## Scope
 
@@ -33,11 +33,13 @@ Each job must contain an id, command, args and authorization metadata. The local
 - The project-wide ledger survives scene switching and a saved `.blend` file being reopened and prevents replay even if the created object is later deleted.
 - The add-on does not submit a successful or failed execution result until Blender's `save_post` callback confirms that the project save completed. Jobs remain queued while the project is untitled. The object marker can recover a missing ledger entry when the object still exists.
 - The result acknowledgement is save-gated: a process crash before the `.blend` save leaves the backend job unacknowledged, allowing lease expiry and redelivery. After the save, the project ledger lets a redelivery return the recorded result without repeating the operation. The backend must retain job state and idempotently accept repeated results. Future commands must define and test their own durable idempotency strategy before they can be added to the allowlist.
-- Both endpoints require a bearer token over HTTPS.
-- The service must bind jobs to the authenticated add-on installation and prevent cross-user delivery and replay.
-- The service must issue short-lived, revocable credentials. The add-on stores the token in Blender preferences; do not commit tokens or place them in source code.
+- The add-on authenticates with an installation-specific bearer credential. The backend stores only its SHA-256 hash and supports revocation.
+- Every job is assigned to one installation. Polling and result submission are scoped to the authenticated installation.
+- Every lease receives a fresh fencing token. The backend stores only its hash and rejects results from an expired/replaced lease.
+- The add-on carries the lease token with the save-gated result. Both endpoints require HTTPS in deployment; the connector rejects non-HTTPS URLs and redirects.
+- The admin credential is server-only. A trusted server-side caller must verify user identity, workspace ownership and explicit approval before enqueueing a job.
 
-The service is not implemented in this repository increment. The connector is a client-side contract implementation and cannot connect successfully until a compatible service exists.
+The v0.2 FastAPI service is implemented in `backend/app.py` and covered by SQLite API tests plus PostgreSQL concurrency integration tests. It is not deployed. Existing databases require a reviewed schema migration before upgrading; `create_all` is not a production migration strategy.
 
 ## Threading and safety
 

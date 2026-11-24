@@ -6,7 +6,7 @@ MotionLab is LogicalSky's Creative Engineering Lab for interactive experiments, 
 
 The first increment establishes a constrained, outbound-only bridge for approved Blender scene jobs. It currently implements one allowlisted operation: create a cube.
 
-The bridge client expects a compatible MotionLab service, which is not implemented in this increment. See [the architecture](docs/architecture.md) for the service contract, threading model and security boundaries.
+The repository now includes a v0.2 FastAPI job service with installation-scoped credentials, targeted jobs, PostgreSQL lease locking and fenced result acknowledgements. It is not deployed. See [the backend guide](backend/README.md) and [the architecture](docs/architecture.md) for the service contract, threading model and security boundaries.
 
 ## Development
 

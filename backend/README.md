@@ -1,6 +1,6 @@
 # MotionLab backend
 
-This service implements the v0.1 contract consumed by `motionlab_blender.connector`.
+This service implements the v0.2 installation-scoped job API consumed by the Blender bridge.
 
 ## Local development
 
@@ -10,28 +10,28 @@ Requires Python 3.11+.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-export MOTIONLAB_ADDON_TOKEN='replace-with-a-long-random-addon-token'
-export MOTIONLAB_ADMIN_TOKEN='replace-with-a-separate-long-random-admin-token'
+export MOTIONLAB_ADMIN_TOKEN='replace-with-a-long-random-admin-token'
 uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
-The default database is SQLite at `./motionlab.db`. Set `DATABASE_URL` to a PostgreSQL SQLAlchemy URL for production-like testing, for example `postgresql+psycopg://user:password@host:5432/motionlab`.
+The default database is SQLite at `./motionlab.db`. Set `DATABASE_URL` to a PostgreSQL SQLAlchemy URL for PostgreSQL testing, for example `postgresql+psycopg://user:password@host:5432/motionlab`.
 
 Run tests with `python -m pytest -q`.
 
 ## API
 
 - `GET /healthz`: liveness check.
-- `POST /v1/admin/jobs`: enqueue a job. Requires the admin bearer token.
-- `GET /v1/jobs/next`: lease the next job. Requires the add-on bearer token.
-- `POST /v1/jobs/{job_id}/result`: accept the saved Blender result. Requires the add-on bearer token.
+- `POST /v1/admin/installations`: provision an installation. Returns its bearer token once; only the SHA-256 token hash is stored.
+- `POST /v1/admin/installations/{installation_id}/revoke`: revoke credentials and release that installation's unfinished jobs.
+- `POST /v1/admin/jobs`: enqueue a job explicitly assigned to an active installation.
+- `POST /v1/admin/jobs/{job_id}/assign`: assign or reassign a queued job to an active installation.
+- `GET /v1/jobs/next`: lease a job only to the authenticated installation. The response includes a one-time lease token.
+- `POST /v1/jobs/{job_id}/result`: submit the result with the current lease token.
 
-The initial service deliberately supports one configured add-on installation/token. It allows only `create_cube`, requires `approved: true` and the `scene.write` scope, and validates command arguments again on the server.
+All `/v1/admin/*` routes require the server-side admin bearer token. Blender installations receive distinct credentials. Lease tokens are rotated on redelivery, and only the current unexpired token can acknowledge a job.
 
-**Trust boundary:** the admin bearer token is a privileged server-side credential. Possession of it authorizes job creation; the `approved` field records the approval decision made by that trusted caller. Never put this token in the Grey browser UI, Blender add-on, mobile clients, or any public client. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. The add-on token is a separate, lower-privilege credential and cannot enqueue jobs.
+Only `create_cube` is currently supported. The server requires `approved: true` and the `scene.write` scope, then validates the command arguments again. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. Never put the admin token in Grey's browser UI, Blender, mobile clients, or any public client.
 
 ## Deployment boundary
 
-This is a backend implementation, not a deployed service. Do not expose it publicly until production authentication, HTTPS termination, persistent PostgreSQL, installation-specific credentials, lease concurrency, rate limiting, structured operational logging, backups and deployment configuration have been reviewed.
-
-The current add-on credential represents one installation. Before multi-device or multi-user use, add an installation registry and bind each lease to a distinct installation identity. SQLite is for deterministic development tests, not concurrent production workers.
+This is a backend implementation, not a deployed service. Do not expose it publicly until database migrations for existing deployments, production secrets management, HTTPS termination, persistent PostgreSQL, rate limiting, structured operational logging, backups, and deployment configuration have been reviewed. SQLite is for deterministic development tests, not concurrent production workers.
