@@ -12,7 +12,9 @@ The first increment proves a constrained Blender execution path. It does not imp
 4. A network worker validates and queues the received job. It must not access Blender data.
 5. A Blender application timer drains at most ten jobs per tick on Blender's main thread.
 6. The local protocol and permission checks run again before an allowlisted operation executes.
-7. The result is placed on the worker's outbound result queue and returned to the service.
+7. The operation result remains local and pending; it is not sent to the service yet.
+8. Blender's `save_post` handler releases results only after a successful `.blend` save has persisted both the scene mutation and project-wide idempotency ledger.
+9. The network worker submits the saved result. If the process stops before the service accepts it, the backend lease expires and the job may be redelivered; the persisted ledger returns the original result without repeating the scene mutation.
 
 ## First command
 
@@ -28,8 +30,9 @@ Each job must contain an id, command, args and authorization metadata. The local
 - `POST /v1/jobs/{job_id}/result` accepts a JSON execution result and is idempotent for a given job id. Repeated submissions must return the original accepted result and must not enqueue or execute the job again.
 - The service must persist job state and lease ownership. A lease timeout may cause redelivery, so the Blender operation itself must also be idempotent.
 - For `create_cube`, the add-on stores a job ID, SHA-256 fingerprint and original result in a JSON text datablock at project level. The object also carries job ID and fingerprint custom properties as a recovery marker. Re-delivery with the same ID and same payload returns the recorded result without creating another object; reuse of the ID with a different payload is rejected.
-- The project-wide ledger survives scene switching and a saved `.blend` file being reopened and prevents replay even if the created object is later deleted. The object marker can recover a missing ledger entry when the object still exists.
-- This is durable across saved scene reloads, not a transactional guarantee against power loss or a process crash before the `.blend` file is saved. The backend must retain job state and idempotently accept repeated results. Future commands must define and test their own durable idempotency strategy before they can be added to the allowlist.
+- The project-wide ledger survives scene switching and a saved `.blend` file being reopened and prevents replay even if the created object is later deleted.
+- The add-on does not submit a successful or failed execution result until Blender's `save_post` callback confirms that the project save completed. Jobs remain queued while the project is untitled. The object marker can recover a missing ledger entry when the object still exists.
+- The result acknowledgement is save-gated: a process crash before the `.blend` save leaves the backend job unacknowledged, allowing lease expiry and redelivery. After the save, the project ledger lets a redelivery return the recorded result without repeating the operation. The backend must retain job state and idempotently accept repeated results. Future commands must define and test their own durable idempotency strategy before they can be added to the allowlist.
 - Both endpoints require a bearer token over HTTPS.
 - The service must bind jobs to the authenticated add-on installation and prevent cross-user delivery and replay.
 - The service must issue short-lived, revocable credentials. The add-on stores the token in Blender preferences; do not commit tokens or place them in source code.
@@ -41,6 +44,7 @@ The service is not implemented in this repository increment. The connector is a 
 - The network worker performs HTTP and queue operations only.
 - The local command queue is bounded to 100 pending jobs and never blocks the network worker.
 - The outbound result queue is also bounded to 100 entries. When it is full or a result submission fails, the add-on stops accepting further scene work until result delivery recovers.
+- Results are held in memory until a successful `.blend` save. Only then are they passed to the outbound result queue.
 - HTTPS request timeouts default to two seconds so add-on shutdown has a bounded wait. Shutdown does not attempt unlimited result retries; unacknowledged jobs remain subject to the service lease/recovery policy.
 - Blender's main-thread timer processes at most ten jobs per tick to keep the UI responsive under load.
 - All `bpy` calls run from Blender's main-thread timer callback.
