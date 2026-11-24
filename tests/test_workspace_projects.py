@@ -158,3 +158,42 @@ def test_project_mutations_write_workspace_scoped_audit_events(tmp_path):
         "project.created",
         "project.updated",
     ]
+
+
+def test_project_api_rejects_worker_credentials_and_revoked_workspace(tmp_path):
+    client, _, workspace, token = setup(tmp_path)
+    worker = client.post(
+        "/v1/admin/installations",
+        headers=ADMIN,
+        json={"name": "Blender worker", "workspace_id": workspace["workspace_id"]},
+    )
+    assert worker.status_code == 201, worker.text
+    worker_token = {
+        "Authorization": "Bearer " + worker.json()["access_token"]
+    }
+    assert client.get(
+        "/v1/workspaces/projects", headers=worker_token
+    ).status_code == 401
+
+    # A valid workspace credential can create a project before revocation.
+    created = create_project(client, token)
+    assert created.status_code == 201
+    credential_id = None
+    from backend.app import WorkspaceCredential
+    with client:
+        pass
+    # Revoke through the admin endpoint; subsequent project reads must fail.
+    # The credential id is obtained from the database, never exposed to clients.
+    # setup() returns the TestClient, so access the app through its ASGI state.
+    app = client.app
+    with app.state.session_factory() as session:
+        credential = session.query(WorkspaceCredential).filter_by(
+            workspace_id=workspace["workspace_id"]
+        ).one()
+        credential_id = credential.id
+    revoked = client.post(
+        f"/v1/admin/workspace-credentials/{credential_id}/revoke",
+        headers=ADMIN,
+    )
+    assert revoked.status_code == 200
+    assert client.get("/v1/workspaces/projects", headers=token).status_code == 401
