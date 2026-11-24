@@ -108,6 +108,25 @@ class ResultRequest(BaseModel):
             raise ValueError("Result status must be completed or failed.")
         return value
 
+    @field_validator("output")
+    @classmethod
+    def output_must_be_strict_json(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            try:
+                serialized = json.dumps(value, allow_nan=False, separators=(",", ":"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Result output must contain finite JSON values.") from exc
+            if len(serialized.encode("utf-8")) > 256 * 1024:
+                raise ValueError("Result output exceeds the 256 KiB limit.")
+        return value
+
+    @field_validator("error")
+    @classmethod
+    def error_message_is_bounded(cls, value: str | None) -> str | None:
+        if value is not None and len(value) > 2048:
+            raise ValueError("Result error message exceeds the 2048 character limit.")
+        return value
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -259,7 +278,7 @@ def create_app(
         job = session.get(Job, job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job.")
-        if job.status == "completed":
+        if job.status in {"completed", "failed"}:
             return {"accepted": True, "result": json.loads(job.result_json)}
         if job.status != "leased":
             raise HTTPException(status_code=409, detail="Job is not currently leased.")
@@ -274,7 +293,7 @@ def create_app(
         # the lease; a redelivery cannot acknowledge another installation's job.
         result = payload.model_dump()
         job.result_json = json.dumps(result, separators=(",", ":"), sort_keys=True)
-        job.status = "completed"
+        job.status = payload.status
         job.lease_expires_at = None
         lease.active_job_id = None
         lease.lease_expires_at = None
