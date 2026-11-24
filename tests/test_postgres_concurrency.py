@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import Base, WorkerLease, create_app
+from backend.app import Base, Job, WorkerLease, create_app
 
 DATABASE_URL = os.getenv("MOTIONLAB_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="PostgreSQL integration database not configured")
@@ -33,13 +33,6 @@ def app():
     Base.metadata.create_all(application.state.engine)
     with application.state.session_factory() as session:
         session.add(WorkerLease(installation_id="default-installation"))
-        session.commit()
-    from backend.app import Job, WorkerLease
-    with application.state.session_factory() as session:
-        session.query(Job).delete()
-        lease = session.get(WorkerLease, "default-installation")
-        lease.active_job_id = None
-        lease.lease_expires_at = None
         session.commit()
     yield application
     application.state.engine.dispose()
