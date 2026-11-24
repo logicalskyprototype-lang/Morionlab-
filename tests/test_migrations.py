@@ -2,8 +2,6 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
-from backend.app import Base
-
 
 def _config(database_url):
     config = Config("alembic.ini")
@@ -23,6 +21,8 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
         tables = set(inspect(engine).get_table_names())
         assert {
             "alembic_version",
+            "motionlab_workspaces",
+            "motionlab_workspace_credentials",
             "motionlab_jobs",
             "motionlab_installations",
             "motionlab_job_assignments",
@@ -32,15 +32,20 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_audit_events",
         }.issubset(tables)
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_rate_limits_audit_events"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_workspace_authorization"
+            assert connection.execute(
+                text("SELECT status FROM motionlab_workspaces WHERE id = 'wsp_legacy'")
+            ).scalar_one() == "active"
     finally:
         engine.dispose()
 
 
-def test_migration_adopts_existing_create_all_schema_without_losing_rows(tmp_path):
+def test_workspace_migration_adopts_existing_legacy_rows_without_losing_data(tmp_path):
     database_url = "sqlite:///" + str(tmp_path / "existing.db")
+    config = _config(database_url)
+    command.upgrade(config, "0002_rate_limits_audit_events")
+
     engine = create_engine(database_url)
-    Base.metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -50,16 +55,28 @@ def test_migration_adopts_existing_create_all_schema_without_losing_rows(tmp_pat
             ),
             {"hash": "a" * 64},
         )
+        connection.execute(
+            text(
+                "INSERT INTO motionlab_jobs "
+                "(id, command, args_json, authorization_json, status, lease_expires_at, attempts, result_json, created_at) "
+                "VALUES ('ml_existing', 'create_cube', '{}', '{\"approved\":true,\"scopes\":[\"scene.write\"]}', "
+                "'queued', NULL, 0, NULL, CURRENT_TIMESTAMP)"
+            )
+        )
 
     try:
-        command.upgrade(_config(database_url), "head")
+        command.upgrade(config, "head")
         with engine.connect() as connection:
-            name = connection.execute(
-                text("SELECT name FROM motionlab_installations WHERE id = 'ins_0123456789abcdef0123456789abcdef'")
+            installation = connection.execute(
+                text("SELECT name, workspace_id FROM motionlab_installations WHERE id = 'ins_0123456789abcdef0123456789abcdef'")
+            ).one()
+            assert installation.name == "Existing worker"
+            assert installation.workspace_id == "wsp_legacy"
+            job = connection.execute(
+                text("SELECT workspace_id FROM motionlab_jobs WHERE id = 'ml_existing'")
             ).scalar_one()
-            assert name == "Existing worker"
-            assert connection.execute(text("SELECT COUNT(*) FROM motionlab_jobs")).scalar_one() == 0
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002_rate_limits_audit_events"
+            assert job == "wsp_legacy"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0003_workspace_authorization"
     finally:
         engine.dispose()
 
