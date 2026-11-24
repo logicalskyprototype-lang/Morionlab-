@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -149,6 +151,16 @@ def create_app(
             bootstrap_session.commit()
 
     app = FastAPI(title="MotionLab Job API", version="0.1.0")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_request, _exc):
+        # Do not echo invalid request bodies: Python's JSON decoder accepts
+        # NaN/Infinity, which are not valid JSON numbers and cannot be emitted
+        # safely by Starlette's default validation error serializer.
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"detail": "Invalid request payload."},
+        )
 
     def get_session():
         with SessionLocal() as session:
