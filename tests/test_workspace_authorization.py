@@ -167,3 +167,48 @@ def test_workspace_audit_events_are_scoped(tmp_path):
     assert second_events.status_code == 200
     assert first_events.json()["events"]
     assert all(event["target_id"] != first["workspace_id"] for event in second_events.json()["events"])
+
+
+
+def test_workspace_can_manage_only_its_own_blender_installations(tmp_path):
+    client, _ = setup_client(tmp_path)
+    workspace_a, token_a = create_workspace(client, "Workspace A")
+    workspace_b, token_b = create_workspace(client, "Workspace B")
+
+    created = client.post(
+        "/v1/workspaces/installations",
+        headers=token_a,
+        json={"name": "A Blender"},
+    )
+    assert created.status_code == 201, created.text
+    installation = created.json()
+    assert installation["access_token"]
+
+    own_list = client.get("/v1/workspaces/installations", headers=token_a)
+    other_list = client.get("/v1/workspaces/installations", headers=token_b)
+    assert [item["installation_id"] for item in own_list.json()["installations"]] == [
+        installation["installation_id"]
+    ]
+    assert other_list.json()["installations"] == []
+
+    forbidden_body = client.post(
+        "/v1/workspaces/installations",
+        headers=token_a,
+        json={"name": "Forged", "workspace_id": workspace_b["workspace_id"]},
+    )
+    assert forbidden_body.status_code == 422
+
+    cross_revoke = client.post(
+        f"/v1/workspaces/installations/{installation['installation_id']}/revoke",
+        headers=token_b,
+    )
+    assert cross_revoke.status_code == 404
+
+    own_revoke = client.post(
+        f"/v1/workspaces/installations/{installation['installation_id']}/revoke",
+        headers=token_a,
+    )
+    assert own_revoke.status_code == 200
+    assert client.get("/v1/jobs/next", headers={
+        "Authorization": "Bearer " + installation["access_token"]
+    }).status_code == 401
