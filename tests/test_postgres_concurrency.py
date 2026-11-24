@@ -124,3 +124,30 @@ def test_postgres_expired_lease_is_refenced_and_old_token_rejected(app):
             json={"job_id": job_id, "lease_token": redelivered["lease_token"], "status": "completed"},
         )
         assert accepted.status_code == 200
+
+
+def test_postgres_rate_limit_counts_concurrent_requests_atomically():
+    application = create_app(
+        database_url=DATABASE_URL,
+        admin_token="admin-postgres-test-token",
+        rate_limit_requests=4,
+        rate_limit_window_seconds=60,
+    )
+    Base.metadata.drop_all(application.state.engine)
+    Base.metadata.create_all(application.state.engine)
+    workers = 12
+    barrier = Barrier(workers)
+
+    def request_audit_events():
+        with TestClient(application) as client:
+            barrier.wait(timeout=10)
+            response = client.get("/v1/admin/audit-events", headers=ADMIN)
+            return response.status_code
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            statuses = list(pool.map(lambda _: request_audit_events(), range(workers)))
+        assert statuses.count(200) == 4
+        assert statuses.count(429) == 8
+    finally:
+        application.state.engine.dispose()
