@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend.app import Project, create_app
+from backend.app import Project, WorkspaceCredential, create_app
 
 ADMIN = {"Authorization": "Bearer project-admin-test"}
 
@@ -179,12 +179,9 @@ def test_project_api_rejects_worker_credentials_and_revoked_workspace(tmp_path):
     created = create_project(client, token)
     assert created.status_code == 201
     credential_id = None
-    from backend.app import WorkspaceCredential
-    with client:
-        pass
     # Revoke through the admin endpoint; subsequent project reads must fail.
     # The credential id is obtained from the database, never exposed to clients.
-    # setup() returns the TestClient, so access the app through its ASGI state.
+    # The test client exposes the app state for verifying the persisted credential.
     app = client.app
     with app.state.session_factory() as session:
         credential = session.query(WorkspaceCredential).filter_by(
