@@ -17,6 +17,9 @@ def _process_queue():
     global _WORKER
     processed = 0
     while processed < _MAX_JOBS_PER_TICK:
+        # Do not execute more scene mutations than the result channel can retain.
+        if _WORKER is not None and not _WORKER.can_accept_result():
+            break
         job = _COMMANDS.get_nowait()
         if job is None:
             break
@@ -32,7 +35,12 @@ def _process_queue():
             result["error"] = str(exc)
         finally:
             if _WORKER is not None:
-                _WORKER.submit_result(job["id"], result)
+                accepted = _WORKER.submit_result(job["id"], result)
+                if not accepted:
+                    # This should be prevented by can_accept_result() above.
+                    # Stop the worker rather than silently discarding the result.
+                    _WORKER.stop()
+                    raise RuntimeError("MotionLab result queue capacity changed unexpectedly.")
             _COMMANDS.task_done()
         processed += 1
 
