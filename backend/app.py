@@ -275,6 +275,13 @@ def create_app(
     ):
         if not JOB_ID_PATTERN.fullmatch(job_id) or payload.job_id != job_id:
             raise HTTPException(status_code=400, detail="Result job ID does not match the URL.")
+        # Lock rows in the same order as the polling endpoint (installation
+        # lease first, then job) to avoid a PostgreSQL lock-order deadlock.
+        lease = session.scalar(
+            select(WorkerLease)
+            .where(WorkerLease.installation_id == "default-installation")
+            .with_for_update()
+        )
         job = session.scalar(select(Job).where(Job.id == job_id).with_for_update())
         if job is None:
             raise HTTPException(status_code=404, detail="Unknown job.")
@@ -286,11 +293,6 @@ def create_app(
             return {"accepted": True, "result": original}
         if job.status != "leased":
             raise HTTPException(status_code=409, detail="Job is not currently leased.")
-        lease = session.scalar(
-            select(WorkerLease)
-            .where(WorkerLease.installation_id == "default-installation")
-            .with_for_update()
-        )
         if (
             lease is None
             or lease.active_job_id != job_id
