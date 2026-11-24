@@ -503,24 +503,25 @@ def create_app(
             raise RuntimeError("Production requires MOTIONLAB_ADMIN_TOKEN with at least 32 characters.")
         if not database_url.startswith("postgresql+psycopg://"):
             raise RuntimeError("Production requires PostgreSQL via the psycopg SQLAlchemy driver.")
-        configured_origin = os.getenv("MOTIONLAB_APP_ORIGIN", "")
-        parsed_origin = urlsplit(configured_origin)
-        if (
-            parsed_origin.scheme != "https"
-            or not parsed_origin.netloc
-            or parsed_origin.path not in {"", "/"}
-            or parsed_origin.query
-            or parsed_origin.fragment
-            or parsed_origin.username
-            or parsed_origin.password
-        ):
-            raise RuntimeError(
-                "Production requires MOTIONLAB_APP_ORIGIN to be a valid HTTPS origin."
-            )
     if initialize_schema is None:
         initialize_schema = not production and os.getenv("MOTIONLAB_SKIP_SCHEMA_INIT") != "1"
     if production and initialize_schema:
         raise RuntimeError("Production schema changes must be applied with Alembic, not create_all().")
+    if production:
+            configured_origin = os.getenv("MOTIONLAB_APP_ORIGIN", "")
+            parsed_origin = urlsplit(configured_origin)
+            if (
+                parsed_origin.scheme != "https"
+                or not parsed_origin.netloc
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.query
+                or parsed_origin.fragment
+                or parsed_origin.username
+                or parsed_origin.password
+            ):
+                raise RuntimeError(
+                    "Production requires MOTIONLAB_APP_ORIGIN to be a valid HTTPS origin."
+                )
     if rate_limit_requests < 1 or rate_limit_requests > 10000:
         raise ValueError("Rate limit must be between 1 and 10000 requests.")
     if rate_limit_window_seconds < 1 or rate_limit_window_seconds > 3600:
