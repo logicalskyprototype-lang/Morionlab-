@@ -34,6 +34,13 @@ def app():
     with application.state.session_factory() as session:
         session.add(WorkerLease(installation_id="default-installation"))
         session.commit()
+    from backend.app import Job, WorkerLease
+    with application.state.session_factory() as session:
+        session.query(Job).delete()
+        lease = session.get(WorkerLease, "default-installation")
+        lease.active_job_id = None
+        lease.lease_expires_at = None
+        session.commit()
     yield application
     application.state.engine.dispose()
 
