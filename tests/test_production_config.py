@@ -15,3 +15,13 @@ def test_production_rejects_sqlite(monkeypatch):
     monkeypatch.setenv("MOTIONLAB_ADMIN_TOKEN", "x" * 40)
     with pytest.raises(RuntimeError, match="PostgreSQL"):
         create_app(database_url="sqlite:///./must-not-be-created.db")
+
+
+def test_production_never_allows_create_all(monkeypatch):
+    monkeypatch.setenv("MOTIONLAB_ENV", "production")
+    monkeypatch.setenv("MOTIONLAB_ADMIN_TOKEN", "x" * 40)
+    with pytest.raises(RuntimeError, match="Alembic"):
+        create_app(
+            database_url="postgresql+psycopg://user:pass@localhost/motionlab",
+            initialize_schema=True,
+        )
