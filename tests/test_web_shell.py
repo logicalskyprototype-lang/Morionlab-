@@ -17,7 +17,7 @@ def test_motionlab_web_shell_contains_core_product_areas():
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     for area in ("Overview", "Projects", "Creative workspace", "Asset library", "Animation", "AI studio"):
         assert area in html
-    for area in ("viewport", "timeline", "Scene hierarchy", "project-search"):
+    for area in ("viewport", "timeline", "SCENE HIERARCHY", "project-search"):
         assert area in app
 
 
