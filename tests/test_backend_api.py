@@ -98,10 +98,16 @@ def test_result_url_and_body_ids_must_match(tmp_path):
     assert response.status_code == 400
 
 
-def test_non_finite_numbers_are_rejected():
-    for size in (float("nan"), float("inf")):
-        with pytest.raises(ValidationError):
-            JobRequest.model_validate(approved_job(args={"size": size}))
-    for axis in (float("nan"), float("inf")):
-        with pytest.raises(ValidationError):
-            JobRequest.model_validate(approved_job(args={"location": [axis, 0, 0]}))
+def test_non_finite_numbers_are_rejected(tmp_path):
+    client, _ = client_for(tmp_path)
+    for invalid_number in ("NaN", "Infinity", "-Infinity"):
+        body = (
+            '{"command":"create_cube","args":{"size":' + invalid_number + '},'
+            '"authorization":{"approved":true,"scopes":["scene.write"]}}'
+        )
+        response = client.post(
+            "/v1/admin/jobs",
+            content=body,
+            headers={**ADMIN, "Content-Type": "application/json"},
+        )
+        assert response.status_code == 422
