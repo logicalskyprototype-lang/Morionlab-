@@ -109,3 +109,73 @@ def test_non_finite_numbers_are_rejected(tmp_path):
             headers={**ADMIN, "Content-Type": "application/json"},
         )
         assert response.status_code == 422
+
+
+def test_failed_execution_is_persisted_as_failed_and_replayed(tmp_path):
+    client, _ = client_for(tmp_path)
+    created = client.post("/v1/admin/jobs", json=approved_job(), headers=ADMIN)
+    job_id = created.json()["id"]
+    client.get("/v1/jobs/next", headers=ADDON)
+
+    result = {"job_id": job_id, "status": "failed", "error": "Blender operation failed"}
+    first = client.post(f"/v1/jobs/{job_id}/result", json=result, headers=ADDON)
+    replay = client.post(f"/v1/jobs/{job_id}/result", json=result, headers=ADDON)
+    assert first.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+
+    with client.app.state.session_factory() as session:
+        from backend.app import Job
+        stored = session.get(Job, job_id)
+        assert stored.status == "failed"
+
+
+def test_result_rejects_non_finite_values_and_oversized_output(tmp_path):
+    client, _ = client_for(tmp_path)
+    created = client.post("/v1/admin/jobs", json=approved_job(), headers=ADMIN)
+    job_id = created.json()["id"]
+    client.get("/v1/jobs/next", headers=ADDON)
+
+    invalid_json = (
+        '{"job_id":"' + job_id + '","status":"completed",'
+        '"output":{"value":NaN}}'
+    )
+    response = client.post(
+        f"/v1/jobs/{job_id}/result",
+        content=invalid_json,
+        headers={**ADDON, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 422
+
+    response = client.post(
+        f"/v1/jobs/{job_id}/result",
+        json={"job_id": job_id, "status": "completed", "output": {"value": "x" * (256 * 1024)}},
+        headers=ADDON,
+    )
+    assert response.status_code == 422
+
+
+def test_expired_lease_allows_job_to_be_released_again(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from backend.app import Job, WorkerLease
+
+    client, app = client_for(tmp_path)
+    created = client.post("/v1/admin/jobs", json=approved_job(), headers=ADMIN)
+    job_id = created.json()["id"]
+    first = client.get("/v1/jobs/next", headers=ADDON).json()["job"]
+    assert first["id"] == job_id
+
+    expired = datetime.now(timezone.utc) - timedelta(seconds=10)
+    with app.state.session_factory() as session:
+        job = session.get(Job, job_id)
+        lease = session.get(WorkerLease, "default-installation")
+        job.lease_expires_at = expired
+        lease.lease_expires_at = expired
+        session.commit()
+
+    redelivered = client.get("/v1/jobs/next", headers=ADDON).json()["job"]
+    assert redelivered["id"] == job_id
+
+    with app.state.session_factory() as session:
+        job = session.get(Job, job_id)
+        assert job.attempts == 2
