@@ -11,7 +11,6 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-import logging
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
