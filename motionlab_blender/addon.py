@@ -53,7 +53,7 @@ def _process_queue():
         if job is None:
             break
 
-        result = {"job_id": job["id"], "status": "failed"}
+        result = {"job_id": job["id"], "lease_token": job["lease_token"], "status": "failed"}
         try:
             authorize_job(job)
             result.update({
