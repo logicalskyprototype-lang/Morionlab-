@@ -60,3 +60,17 @@ def test_migration_adopts_existing_create_all_schema_without_losing_rows(tmp_pat
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_installation_job_schema"
     finally:
         engine.dispose()
+
+
+def test_migration_rejects_partial_incompatible_existing_schema(tmp_path):
+    database_url = "sqlite:///" + str(tmp_path / "partial.db")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE motionlab_jobs (id VARCHAR(128) PRIMARY KEY, status VARCHAR(16))")
+        )
+    engine.dispose()
+
+    import pytest
+    with pytest.raises(RuntimeError, match="missing required columns"):
+        command.upgrade(_config(database_url), "head")
