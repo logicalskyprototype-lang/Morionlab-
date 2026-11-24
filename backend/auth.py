@@ -390,7 +390,7 @@ def build_auth_router(
             raw_session,
             max_age=SESSION_SECONDS,
             httponly=True,
-            secure=True,
+            secure=production,
             samesite="lax",
             path="/",
         )
