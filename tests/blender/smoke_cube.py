@@ -53,13 +53,11 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert len(bpy.context.scene.objects) == 1
 
     # The project-wide ledger also prevents replay from another active scene.
-    original_scene = bpy.context.scene
     alternate_scene = bpy.data.scenes.new("MotionLab Alternate Scene")
-    bpy.context.window.scene = alternate_scene
-    replayed_from_other_scene = execute_command(job)
+    with bpy.context.temp_override(scene=alternate_scene):
+        replayed_from_other_scene = execute_command(job)
     assert replayed_from_other_scene == result
     assert len(alternate_scene.objects) == 0
-    bpy.context.window.scene = original_scene
 
     # Even if the user deletes the created object, the project ledger prevents replay.
     bpy.data.objects.remove(bpy.data.objects["MotionLab CI Cube"], do_unlink=True)
