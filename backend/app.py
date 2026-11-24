@@ -551,6 +551,11 @@ def create_app(
             )
             bootstrap_session.commit()
 
+    if production and email_sender is None:
+        from backend.email_resend import build_resend_sender
+
+        email_sender = build_resend_sender()
+
     app = FastAPI(title="MotionLab Job API", version="0.3.0")
 
     # Serve the browser application from the API origin. This keeps session
