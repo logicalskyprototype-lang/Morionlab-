@@ -22,6 +22,12 @@ Run tests with `python -m pytest -q`. Apply schema migrations with `alembic upgr
 
 ## API
 
+- `GET /`: serves the same-origin MotionLab browser application.
+- `POST /v1/auth/magic-link`: request a generic-response email sign-in link.
+- `POST /v1/auth/verify`: consume a single-use link and establish a browser session.
+- `GET /v1/auth/me`: return the current authenticated account and workspace.
+- `POST /v1/auth/logout`: revoke the current browser session.
+- `GET/POST /v1/app/projects` and `PATCH /v1/app/projects/{project_id}`: browser-session-backed, workspace-scoped project operations.
 - `GET /healthz`: liveness check.
 - `GET /readyz`: database connectivity readiness check.
 - `GET /v1/admin/audit-events`: read the latest durable audit events (admin only, maximum 500 per request).
@@ -75,6 +81,12 @@ alembic upgrade head
 The `/healthz` endpoint is a process liveness check. Use `/readyz` for a
 database connectivity readiness check. A successful readiness response does
 not replace migration verification.
+
+## Browser authentication and email delivery
+
+Public signup uses normalized email addresses and one-time magic-link challenges. Only token hashes are stored. New accounts receive a personal workspace and owner membership in the same transaction as successful verification. Browser sessions are random, hashed, revocable, expiring, HttpOnly, and SameSite=Lax. State-changing browser endpoints require a matching Origin header. The browser never receives a workspace credential.
+
+Development captures links in an in-memory outbox available only to tests through `app.state.magic_link_outbox`. In production, the backend uses the Resend adapter when no sender callable is injected. Configure `RESEND_API_KEY` and `MOTIONLAB_EMAIL_FROM` as server-side environment variables. For initial integration testing without a domain, Resend's `onboarding@resend.dev` sender can deliver only to the email address that owns the Resend account; it cannot deliver to other testers. To invite real customers, verify a domain you control in Resend and use a sender address on that domain. The adapter uses Resend's email API, a 10-second request timeout, and no additional Python dependency. Missing configuration or delivery errors fail the request closed and invalidate the undelivered challenge. Do not put the API key in browser code, Git, or client-visible settings. Before customer production, configure the verified sending domain's DNS records, set HTTPS `MOTIONLAB_APP_ORIGIN`, and review trusted proxy/IP handling and delivery retries. Keep the account on Resend's free plan for the initial trial; do not enable paid billing or automatic upgrades.
 
 ## Deployment boundary
 

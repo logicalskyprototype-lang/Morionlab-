@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="referrer" content="no-referrer" />
   <meta name="theme-color" content="#101216" />
   <meta name="description" content="MotionLab is LogicalSky's creative engineering workspace for 3D, simulations and animation." />
   <title>MotionLab · Creative Engineering</title>
@@ -12,7 +13,7 @@
   <link rel="stylesheet" href="/web/styles.css" />
 </head>
 <body>
-  <div id="app" class="app-shell">
+  <div id="app" class="app-shell" style="display:none">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#" aria-label="MotionLab home" data-page="overview">
         <span class="brand-mark"><span></span><span></span><span></span></span>
@@ -20,7 +21,7 @@
       </a>
       <div class="workspace-switcher">
         <div class="workspace-avatar">L</div>
-        <div class="workspace-copy"><strong>LogicalSky Studio</strong><small>Personal workspace</small></div>
+        <div class="workspace-copy"><strong>Personal workspace</strong><small>Your private creative space</small></div>
         <span class="chevron">⌄</span>
       </div>
       <div class="nav-label">WORKSPACE</div>
@@ -43,10 +44,11 @@
           <p>Connect Blender to start running scenes on your machine.</p>
           <button class="text-action" data-page="connections">Manage connections <span>↗</span></button>
         </div>
+        <button class="nav-item bottom-item" id="sign-out"><span class="nav-icon">↪</span><span>Sign out</span></button>
         <button class="nav-item bottom-item" data-page="settings"><span class="nav-icon">⚙</span><span>Settings</span></button>
         <div class="profile">
           <div class="profile-avatar">H</div>
-          <div class="profile-copy"><strong>Studio owner</strong><small>Personal account</small></div>
+          <div class="profile-copy"><strong>MotionLab account</strong><small id="profile-email">Signed in</small></div>
           <span class="profile-menu">•••</span>
         </div>
       </div>

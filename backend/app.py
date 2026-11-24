@@ -8,16 +8,19 @@ import json
 import math
 import os
 import re
+from pathlib import Path
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, case, create_engine, delete, select, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, case, create_engine, delete, select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -138,6 +141,61 @@ class AuditEvent(Base):
 
 class RateLimitBucket(Base):
     __tablename__ = "motionlab_rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class UserAccount(Base):
+    __tablename__ = "motionlab_users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True, index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class WorkspaceMembership(Base):
+    __tablename__ = "motionlab_workspace_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "workspace_id", name="uq_motionlab_membership_user_workspace"),
+        Index("ix_motionlab_workspace_memberships_user_status", "user_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("motionlab_users.id"), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(ForeignKey("motionlab_workspaces.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class BrowserSession(Base):
+    __tablename__ = "motionlab_browser_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("motionlab_users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MagicLinkChallenge(Base):
+    __tablename__ = "motionlab_magic_link_challenges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthRateLimitBucket(Base):
+    __tablename__ = "motionlab_auth_rate_limit_buckets"
 
     bucket_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     window_start_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -435,6 +493,7 @@ def create_app(
     initialize_schema: bool | None = None,
     rate_limit_requests: int = 120,
     rate_limit_window_seconds: int = 60,
+    email_sender=None,
 ) -> FastAPI:
     database_url = database_url or os.getenv("DATABASE_URL", "sqlite:///./motionlab.db")
     admin_token = admin_token if admin_token is not None else os.getenv("MOTIONLAB_ADMIN_TOKEN")
@@ -448,6 +507,21 @@ def create_app(
         initialize_schema = not production and os.getenv("MOTIONLAB_SKIP_SCHEMA_INIT") != "1"
     if production and initialize_schema:
         raise RuntimeError("Production schema changes must be applied with Alembic, not create_all().")
+    if production:
+            configured_origin = os.getenv("MOTIONLAB_APP_ORIGIN", "")
+            parsed_origin = urlsplit(configured_origin)
+            if (
+                parsed_origin.scheme != "https"
+                or not parsed_origin.netloc
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.query
+                or parsed_origin.fragment
+                or parsed_origin.username
+                or parsed_origin.password
+            ):
+                raise RuntimeError(
+                    "Production requires MOTIONLAB_APP_ORIGIN to be a valid HTTPS origin."
+                )
     if rate_limit_requests < 1 or rate_limit_requests > 10000:
         raise ValueError("Rate limit must be between 1 and 10000 requests.")
     if rate_limit_window_seconds < 1 or rate_limit_window_seconds > 3600:
@@ -477,7 +551,22 @@ def create_app(
             )
             bootstrap_session.commit()
 
-    app = FastAPI(title="MotionLab Job API", version="0.2.0")
+    if production and email_sender is None:
+        from backend.email_resend import build_resend_sender
+
+        email_sender = build_resend_sender()
+
+    app = FastAPI(title="MotionLab Job API", version="0.3.0")
+
+    # Serve the browser application from the API origin. This keeps session
+    # cookies, CSRF Origin checks, and browser API calls on one origin.
+    web_root = Path(__file__).resolve().parent.parent / "web"
+    if web_root.is_dir():
+        app.mount("/web", StaticFiles(directory=web_root), name="motionlab-web")
+
+        @app.get("/", include_in_schema=False)
+        def web_index():
+            return FileResponse(web_root / "index.html")
 
     app.state.rate_limit_cleanup_counter = 0
 
@@ -629,6 +718,31 @@ def create_app(
         if workspace is None or workspace.status != "active":
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace is not active.")
         return workspace
+
+    from backend.auth import build_auth_router
+
+    app.state.magic_link_outbox = []
+    app.include_router(
+        build_auth_router(
+            session_factory=SessionLocal,
+            engine=engine,
+            UserAccount=UserAccount,
+            WorkspaceMembership=WorkspaceMembership,
+            BrowserSession=BrowserSession,
+            MagicLinkChallenge=MagicLinkChallenge,
+            AuthRateLimitBucket=AuthRateLimitBucket,
+            Workspace=Workspace,
+            Project=Project,
+            AuditEvent=AuditEvent,
+            utcnow=_utcnow,
+            token_hash=_token_hash,
+            record_audit=_record_audit,
+            outbox=app.state.magic_link_outbox,
+            production=production,
+            app_origin=os.getenv("MOTIONLAB_APP_ORIGIN"),
+            email_sender=email_sender,
+        )
+    )
 
     @app.get("/healthz")
     def health():
