@@ -30,7 +30,7 @@ def build_resend_sender():
         sender = os.getenv("MOTIONLAB_EMAIL_FROM", "").strip()
         if not api_key or not sender:
             raise RuntimeError("Resend email delivery is not configured.")
-        if "\\r" in sender or "\\n" in sender:
+        if "\r" in sender or "\n" in sender:
             raise RuntimeError("MOTIONLAB_EMAIL_FROM contains invalid header characters.")
 
         safe_link = escape(link, quote=True)
@@ -41,8 +41,8 @@ def build_resend_sender():
             "subject": "Your MotionLab sign-in link",
             "text": (
                 "Use this one-time link to sign in to MotionLab. "
-                "It expires in 15 minutes and can only be used once.\\n\\n"
-                f"{link}\\n\\n"
+                "It expires in 15 minutes and can only be used once.\n\n"
+                f"{link}\n\n"
                 "If you did not request this email, you can ignore it."
             ),
             "html": (
