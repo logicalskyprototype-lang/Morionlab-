@@ -76,3 +76,17 @@ def test_migration_rejects_partial_incompatible_existing_schema(tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match="missing required columns"):
         command.upgrade(_config(database_url), "head")
+
+
+def test_security_migration_rejects_partial_rate_limit_table(tmp_path):
+    database_url = "sqlite:///" + str(tmp_path / "partial-rate-limit.db")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE motionlab_rate_limit_buckets (bucket_key VARCHAR(64) PRIMARY KEY)")
+        )
+    engine.dispose()
+
+    import pytest
+    with pytest.raises(RuntimeError, match="Cannot adopt motionlab_rate_limit_buckets"):
+        command.upgrade(_config(database_url), "head")
