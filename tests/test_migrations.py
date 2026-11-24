@@ -28,6 +28,8 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_job_assignments",
             "motionlab_worker_leases",
             "motionlab_job_lease_grants",
+            "motionlab_rate_limit_buckets",
+            "motionlab_audit_events",
         }.issubset(tables)
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001_installation_job_schema"
