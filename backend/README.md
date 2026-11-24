@@ -1,6 +1,6 @@
 # MotionLab backend
 
-This service implements the v0.2 installation-scoped job API consumed by the Blender bridge.
+This service implements the v0.3 workspace-scoped job API and installation-scoped worker contract consumed by the Blender bridge.
 
 ## Local development
 
@@ -16,7 +16,7 @@ export MOTIONLAB_ADMIN_TOKEN='replace-with-a-long-random-admin-token'
 uvicorn backend.app:app --host 127.0.0.1 --port 8000
 ```
 
-The default database is SQLite at `./motionlab.db`. Set `DATABASE_URL` to a PostgreSQL SQLAlchemy URL for PostgreSQL testing, for example `postgresql+psycopg://user:password@host:5432/motionlab`.
+The default database is SQLite at `./motionlab.db`. Set `DATABASE_URL` to a PostgreSQL SQLAlchemy URL for PostgreSQL testing, for example `postgresql+psycopg://user:password@host:5432/motionlab`. For an existing database, run `alembic upgrade head` before starting the updated service; `create_all()` does not alter old tables.
 
 Run tests with `python -m pytest -q`. Apply schema migrations with `alembic upgrade head`.
 
@@ -25,14 +25,21 @@ Run tests with `python -m pytest -q`. Apply schema migrations with `alembic upgr
 - `GET /healthz`: liveness check.
 - `GET /readyz`: database connectivity readiness check.
 - `GET /v1/admin/audit-events`: read the latest durable audit events (admin only, maximum 500 per request).
-- `POST /v1/admin/installations`: provision an installation. Returns its bearer token once; only the SHA-256 token hash is stored.
+- `POST /v1/admin/workspaces`: create a workspace and issue its first workspace credential once.
+- `POST /v1/admin/workspaces/{workspace_id}/credentials`: issue an additional workspace credential.
+- `POST /v1/admin/workspace-credentials/{credential_id}/revoke`: revoke a workspace credential.
+- `POST /v1/admin/workspaces/{workspace_id}/deactivate`: deactivate a workspace.
+- `POST /v1/admin/installations`: provision an installation for a selected workspace (defaults to the legacy workspace). Returns its bearer token once.
 - `POST /v1/admin/installations/{installation_id}/revoke`: revoke credentials and release that installation's unfinished jobs.
-- `POST /v1/admin/jobs`: enqueue a job explicitly assigned to an active installation.
-- `POST /v1/admin/jobs/{job_id}/assign`: assign or reassign a queued job to an active installation.
+- `POST /v1/admin/jobs`: admin-only job enqueue for an active installation.
+- `POST /v1/admin/jobs/{job_id}/assign`: assign or reassign a queued job, only within the same workspace.
+- `POST /v1/workspaces/installations`, `GET /v1/workspaces/installations`, and `POST /v1/workspaces/installations/{installation_id}/revoke`: manage Blender installations within the authenticated workspace.
+- `POST /v1/workspaces/jobs`: enqueue a job for an installation in the authenticated workspace.
+- `GET /v1/workspaces/audit-events`: read audit history for the authenticated workspace only.
 - `GET /v1/jobs/next`: lease a job only to the authenticated installation. The response includes a one-time lease token.
 - `POST /v1/jobs/{job_id}/result`: submit the result with the current lease token.
 
-All `/v1/admin/*` routes require the server-side admin bearer token. Blender installations receive distinct credentials. Lease tokens are rotated on redelivery, and only the current unexpired token can acknowledge a job.
+Admin credentials, workspace credentials, and installation credentials are separate principals. Workspace identity is derived from the workspace bearer credential; request bodies cannot select a workspace. Workspace credentials are server-to-server secrets and must never be placed in browser JavaScript, mobile clients, or Blender. The trusted Grey/orchestrator service must authenticate the human user, check workspace membership and permissions, and verify explicit approval before making workspace API calls. Blender installations receive distinct credentials. Lease tokens are rotated on redelivery, and only the current unexpired token can acknowledge a job.
 
 ## API abuse controls and audit events
 
@@ -42,7 +49,7 @@ The server stores only a SHA-256 digest of each rate-limit identity, not bearer 
 
 Installation creation/revocation, job creation/assignment/lease, and accepted job results write audit events in the same database transaction as the corresponding state change. Audit details are intentionally allowlisted and must never contain access tokens, lease tokens, or authorization headers. Administrators can inspect recent entries through `GET /v1/admin/audit-events?limit=100`. The audit endpoint is read-only; audit events are not editable through the API.
 
-Only `create_cube` is currently supported. The server requires `approved: true` and the `scene.write` scope, then validates the command arguments again. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. Never put the admin token in Grey's browser UI, Blender, mobile clients, or any public client.
+Only `create_cube` is currently supported. The server requires `approved: true` and the `scene.write` scope, then validates the command arguments again. A trusted server-side orchestrator must verify the user's identity, workspace membership, permissions, and explicit approval before calling the workspace endpoint. Never put admin or workspace credentials in Grey's browser UI, Blender, mobile clients, or any public client.
 
 ## Production startup
 
