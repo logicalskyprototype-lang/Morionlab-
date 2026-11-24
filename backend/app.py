@@ -338,13 +338,19 @@ def create_app(
         supplied = _bearer_token(request.headers.get("authorization"))
         valid_credential = _token_matches(supplied, admin_token)
         if supplied and not valid_credential:
-            with SessionLocal() as auth_session:
-                valid_credential = auth_session.scalar(
-                    select(Installation.id).where(
-                        Installation.token_hash == _token_hash(supplied),
-                        Installation.revoked_at.is_(None),
-                    )
-                ) is not None
+            try:
+                with SessionLocal() as auth_session:
+                    valid_credential = auth_session.scalar(
+                        select(Installation.id).where(
+                            Installation.token_hash == _token_hash(supplied),
+                            Installation.revoked_at.is_(None),
+                        )
+                    ) is not None
+            except SQLAlchemyError:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"detail": "API protection is temporarily unavailable."},
+                )
 
         if supplied and valid_credential:
             principal = "credential:" + _token_hash(supplied)
