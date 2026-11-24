@@ -63,7 +63,7 @@ async function loadProjects() {
 }
 
 async function bootstrapAuth() {
-  const params = new URLSearchParams(location.search);
+  const params = new URLSearchParams(location.hash.slice(1));
   const token = params.get("auth_token");
   if (token) {
     history.replaceState({}, "", location.pathname + location.hash);
