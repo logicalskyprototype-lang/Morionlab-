@@ -18,6 +18,25 @@ def upgrade():
     inspector = inspect(bind)
     existing = set(inspector.get_table_names())
 
+    expected_columns = {
+        "motionlab_rate_limit_buckets": {
+            "bucket_key", "window_start_epoch", "request_count",
+        },
+        "motionlab_audit_events": {
+            "id", "event_type", "actor_type", "actor_id", "target_type",
+            "target_id", "details_json", "created_at",
+        },
+    }
+    for table_name, required in expected_columns.items():
+        if table_name in existing:
+            actual = {column["name"] for column in inspector.get_columns(table_name)}
+            missing = required - actual
+            if missing:
+                raise RuntimeError(
+                    f"Cannot adopt {table_name}: missing required columns "
+                    f"{sorted(missing)}. Use a reviewed migration for this schema."
+                )
+
     if "motionlab_rate_limit_buckets" not in existing:
         op.create_table(
             "motionlab_rate_limit_buckets",
