@@ -25,7 +25,10 @@ Each job must contain an id, command, args and authorization metadata. The local
 - `GET /v1/jobs/next` returns `{"job": null}` when no job is available, or `{"job": { ...validated job... }}`.
 - A returned job must be leased to the authenticated add-on installation until its result is accepted or the lease expires. A job not accepted into the local queue must be made available again after lease expiry.
 - The service must not dispatch another job to the same installation while an earlier job is leased, unless it explicitly supports bounded concurrent leases.
-- `POST /v1/jobs/{job_id}/result` accepts a JSON execution result and is idempotent for a given job id. Repeated submissions must not execute or apply the job again.
+- `POST /v1/jobs/{job_id}/result` accepts a JSON execution result and is idempotent for a given job id. Repeated submissions must return the original accepted result and must not enqueue or execute the job again.
+- The service must persist job state and lease ownership. A lease timeout may cause redelivery, so the Blender operation itself must also be idempotent.
+- For `create_cube`, the add-on stores the job ID and a SHA-256 fingerprint of the normalized command payload as custom properties on the created Blender object. Re-delivery with the same ID and same payload returns the existing object; reuse of the ID with a different payload is rejected.
+- This operation-level guarantee survives a saved `.blend` file being reopened. It does not claim exactly-once behavior for unsaved scene changes lost in a process or machine crash. Future commands must define and test their own durable idempotency strategy before they can be added to the allowlist.
 - Both endpoints require a bearer token over HTTPS.
 - The service must bind jobs to the authenticated add-on installation and prevent cross-user delivery and replay.
 - The service must issue short-lived, revocable credentials. The add-on stores the token in Blender preferences; do not commit tokens or place them in source code.
