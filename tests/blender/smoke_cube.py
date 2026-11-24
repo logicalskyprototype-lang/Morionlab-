@@ -2,6 +2,7 @@
 
 import os
 import sys
+import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
@@ -36,5 +37,34 @@ assert len(bpy.context.scene.objects) == 1
 assert tuple(round(value, 3) for value in result["location"]) == (1.0, 2.0, 3.0)
 assert all(abs(value - 2.0) < 0.001 for value in result["dimensions"])
 
+# Redelivery in the same session must return the existing object, not create another.
+replayed = execute_command(job)
+assert replayed == result
+assert len(bpy.context.scene.objects) == 1
+
+# The idempotency marker must survive a saved .blend file being reopened.
+with tempfile.TemporaryDirectory() as temp_dir:
+    scene_path = os.path.join(temp_dir, "motionlab-idempotency.blend")
+    bpy.ops.wm.save_as_mainfile(filepath=scene_path)
+    bpy.ops.wm.open_mainfile(filepath=scene_path)
+
+    replayed_after_reload = execute_command(job)
+    assert replayed_after_reload == result
+    assert len(bpy.context.scene.objects) == 1
+
+# Reusing a job ID with a different payload must be rejected, not mutate the scene.
+conflicting_job = dict(job)
+conflicting_job["args"] = dict(job["args"], name="Different Cube")
+try:
+    execute_command(conflicting_job)
+except ValueError as exc:
+    assert "different command payload" in str(exc)
+else:
+    raise AssertionError("Conflicting job ID/payload was not rejected")
+assert len(bpy.context.scene.objects) == 1
+
 print("MOTIONLAB_ADDON_REGISTRATION=PASS")
+print("MOTIONLAB_CUBE_IDEMPOTENCY_SAME_SESSION=PASS")
+print("MOTIONLAB_CUBE_IDEMPOTENCY_AFTER_RELOAD=PASS")
+print("MOTIONLAB_CUBE_IDEMPOTENCY_CONFLICT=PASS")
 print("MOTIONLAB_BLENDER_SMOKE_TEST=PASS")
