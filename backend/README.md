@@ -28,6 +28,8 @@ Run tests with `python -m pytest -q`.
 
 The initial service deliberately supports one configured add-on installation/token. It allows only `create_cube`, requires `approved: true` and the `scene.write` scope, and validates command arguments again on the server.
 
+**Trust boundary:** the admin bearer token is a privileged server-side credential. Possession of it authorizes job creation; the `approved` field records the approval decision made by that trusted caller. Never put this token in the Grey browser UI, Blender add-on, mobile clients, or any public client. A trusted server-side orchestrator must verify the user's explicit approval before calling the admin endpoint. The add-on token is a separate, lower-privilege credential and cannot enqueue jobs.
+
 ## Deployment boundary
 
 This is a backend implementation, not a deployed service. Do not expose it publicly until production authentication, HTTPS termination, persistent PostgreSQL, installation-specific credentials, lease concurrency, rate limiting, structured operational logging, backups and deployment configuration have been reviewed.
