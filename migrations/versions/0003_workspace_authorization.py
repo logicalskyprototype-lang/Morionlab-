@@ -95,6 +95,9 @@ def upgrade():
     audit_columns = {item["name"] for item in inspect(bind).get_columns("motionlab_audit_events")}
     if "workspace_id" not in audit_columns:
         op.add_column("motionlab_audit_events", sa.Column("workspace_id", sa.String(36), nullable=True))
+    bind.execute(sa.text(
+        "UPDATE motionlab_audit_events SET workspace_id = 'wsp_legacy' WHERE workspace_id IS NULL"
+    ))
     audit_fks = {tuple(item.get("constrained_columns", [])) for item in inspect(bind).get_foreign_keys("motionlab_audit_events")}
     if ("workspace_id",) not in audit_fks:
         with op.batch_alter_table("motionlab_audit_events") as batch:
