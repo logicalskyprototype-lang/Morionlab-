@@ -26,6 +26,19 @@ def upgrade():
             sa.Column("status", sa.String(16), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         )
+    required_workspace_columns = {
+        "motionlab_workspaces": {"id", "name", "status", "created_at"},
+        "motionlab_workspace_credentials": {"id", "workspace_id", "token_hash", "created_at", "revoked_at"},
+    }
+    for table_name, required in required_workspace_columns.items():
+        if table_name in tables:
+            actual = {item["name"] for item in inspect(bind).get_columns(table_name)}
+            missing = required - actual
+            if missing:
+                raise RuntimeError(
+                    f"Cannot adopt {table_name}: missing required columns {sorted(missing)}."
+                )
+
     if "motionlab_workspace_credentials" not in tables:
         op.create_table(
             "motionlab_workspace_credentials",
@@ -35,14 +48,11 @@ def upgrade():
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         )
-        op.create_index(
-            "ix_motionlab_workspace_credentials_workspace_id",
-            "motionlab_workspace_credentials", ["workspace_id"],
-        )
-        op.create_index(
-            "ix_motionlab_workspace_credentials_token_hash",
-            "motionlab_workspace_credentials", ["token_hash"], unique=True,
-        )
+    credential_indexes = {item["name"] for item in inspect(bind).get_indexes("motionlab_workspace_credentials")}
+    if "ix_motionlab_workspace_credentials_workspace_id" not in credential_indexes:
+        op.create_index("ix_motionlab_workspace_credentials_workspace_id", "motionlab_workspace_credentials", ["workspace_id"])
+    if "ix_motionlab_workspace_credentials_token_hash" not in credential_indexes:
+        op.create_index("ix_motionlab_workspace_credentials_token_hash", "motionlab_workspace_credentials", ["token_hash"], unique=True)
 
     connection = op.get_bind()
     connection.execute(
@@ -84,16 +94,17 @@ def upgrade():
 
     audit_columns = {item["name"] for item in inspect(bind).get_columns("motionlab_audit_events")}
     if "workspace_id" not in audit_columns:
-        op.add_column(
-            "motionlab_audit_events",
-            sa.Column("workspace_id", sa.String(36), nullable=True),
-        )
+        op.add_column("motionlab_audit_events", sa.Column("workspace_id", sa.String(36), nullable=True))
+    audit_fks = {tuple(item.get("constrained_columns", [])) for item in inspect(bind).get_foreign_keys("motionlab_audit_events")}
+    if ("workspace_id",) not in audit_fks:
+        with op.batch_alter_table("motionlab_audit_events") as batch:
+            batch.create_foreign_key(
+                "fk_motionlab_audit_events_workspace_id",
+                "motionlab_workspaces", ["workspace_id"], ["id"],
+            )
     audit_indexes = {item["name"] for item in inspect(bind).get_indexes("motionlab_audit_events")}
     if "ix_motionlab_audit_events_workspace_id" not in audit_indexes:
-        op.create_index(
-            "ix_motionlab_audit_events_workspace_id",
-            "motionlab_audit_events", ["workspace_id"],
-        )
+        op.create_index("ix_motionlab_audit_events_workspace_id", "motionlab_audit_events", ["workspace_id"])
 
 
 def downgrade():
