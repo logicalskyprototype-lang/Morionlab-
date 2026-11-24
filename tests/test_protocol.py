@@ -9,6 +9,7 @@ def valid_job():
         "command": "create_cube",
         "args": {"name": "CI Cube", "size": 2, "location": [0, 0, 0]},
         "authorization": {"approved": True, "scopes": ["scene.write"]},
+        "lease_token": "lease-token-for-test",
     }
 
 
