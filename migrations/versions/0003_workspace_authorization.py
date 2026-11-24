@@ -64,8 +64,8 @@ def upgrade():
             sa.text(f"UPDATE {table_name} SET workspace_id = 'wsp_legacy' WHERE workspace_id IS NULL")
         )
         # Batch mode works on SQLite and PostgreSQL and adds the ownership FK.
-        foreign_keys = {item.get("constrained_columns", []) for item in inspect(bind).get_foreign_keys(table_name)}
-        has_workspace_fk = ["workspace_id"] in foreign_keys
+        foreign_keys = {tuple(item.get("constrained_columns", [])) for item in inspect(bind).get_foreign_keys(table_name)}
+        has_workspace_fk = ("workspace_id",) in foreign_keys
         if not has_workspace_fk:
             with op.batch_alter_table(table_name) as batch:
                 batch.alter_column("workspace_id", existing_type=sa.String(36), nullable=False)
