@@ -8,7 +8,7 @@ import bpy
 
 _JOB_MARKER = "_motionlab_job_id"
 _PAYLOAD_MARKER = "_motionlab_payload_sha256"
-_SCENE_LEDGER = "_motionlab_job_ledger"
+_LEDGER_TEXT_NAME = "MotionLabJobLedger"
 
 
 def _payload_fingerprint(args):
@@ -21,23 +21,26 @@ def _payload_fingerprint(args):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _load_ledger(scene):
-    raw = scene.get(_SCENE_LEDGER, "{}")
+def _load_ledger():
+    ledger_text = bpy.data.texts.get(_LEDGER_TEXT_NAME)
+    raw = "{}" if ledger_text is None else ledger_text.as_string()
     try:
         ledger = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("MotionLab scene idempotency ledger is corrupted.") from exc
+        raise RuntimeError("MotionLab project idempotency ledger is corrupted.") from exc
     if not isinstance(ledger, dict):
-        raise RuntimeError("MotionLab scene idempotency ledger is invalid.")
+        raise RuntimeError("MotionLab project idempotency ledger is invalid.")
     return ledger
 
 
-def _save_ledger(scene, ledger):
-    scene[_SCENE_LEDGER] = json.dumps(
-        ledger,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+def _save_ledger(ledger):
+    serialized = json.dumps(ledger, sort_keys=True, separators=(",", ":"))
+    ledger_text = bpy.data.texts.get(_LEDGER_TEXT_NAME)
+    if ledger_text is None:
+        ledger_text = bpy.data.texts.new(_LEDGER_TEXT_NAME)
+    else:
+        ledger_text.clear()
+    ledger_text.write(serialized)
 
 
 def _cube_result(obj):
@@ -53,7 +56,7 @@ def create_cube(args, job_id):
     """Create one cube per job ID and persist its result in the active scene."""
     scene = bpy.context.scene
     fingerprint = _payload_fingerprint(args)
-    ledger = _load_ledger(scene)
+    ledger = _load_ledger()
     prior = ledger.get(job_id)
 
     if prior is not None:
@@ -78,7 +81,7 @@ def create_cube(args, job_id):
                 "payload_sha256": fingerprint,
                 "result": result,
             }
-            _save_ledger(scene, ledger)
+            _save_ledger(ledger)
             return result
 
     bpy.ops.mesh.primitive_cube_add(
