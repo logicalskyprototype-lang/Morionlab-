@@ -179,3 +179,37 @@ def test_expired_lease_allows_job_to_be_released_again(tmp_path):
     with app.state.session_factory() as session:
         job = session.get(Job, job_id)
         assert job.attempts == 2
+
+
+def test_result_retry_with_different_payload_is_conflict(tmp_path):
+    client, _ = client_for(tmp_path)
+    created = client.post("/v1/admin/jobs", json=approved_job(), headers=ADMIN)
+    job_id = created.json()["id"]
+    client.get("/v1/jobs/next", headers=ADDON)
+    first = {"job_id": job_id, "status": "completed", "output": {"object_name": "Cube"}}
+    changed = {"job_id": job_id, "status": "completed", "output": {"object_name": "Other"}}
+    assert client.post(f"/v1/jobs/{job_id}/result", json=first, headers=ADDON).status_code == 200
+    assert client.post(f"/v1/jobs/{job_id}/result", json=changed, headers=ADDON).status_code == 409
+
+
+def test_expired_lease_cannot_acknowledge_job(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from backend.app import Job, WorkerLease
+
+    client, app = client_for(tmp_path)
+    created = client.post("/v1/admin/jobs", json=approved_job(), headers=ADMIN)
+    job_id = created.json()["id"]
+    client.get("/v1/jobs/next", headers=ADDON)
+    expired = datetime.now(timezone.utc) - timedelta(seconds=10)
+    with app.state.session_factory() as session:
+        job = session.get(Job, job_id)
+        lease = session.get(WorkerLease, "default-installation")
+        job.lease_expires_at = expired
+        lease.lease_expires_at = expired
+        session.commit()
+    response = client.post(
+        f"/v1/jobs/{job_id}/result",
+        json={"job_id": job_id, "status": "completed"},
+        headers=ADDON,
+    )
+    assert response.status_code == 409
