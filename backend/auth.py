@@ -340,7 +340,7 @@ def build_auth_router(
         user = (
             session.get(UserAccount, inserted_user_id)
             if inserted_user_id
-            else session.scalar(select(UserAccount).where(UserAccount.email == challenge.email))
+            else session.scalar(select(UserAccount).where(UserAccount.email == challenge.email).with_for_update())
         )
         if user is None:
             session.rollback()
