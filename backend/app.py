@@ -1022,7 +1022,7 @@ def create_app(
                 "status": (
                     "online"
                     if item.last_seen_at is not None
-                    and (_utcnow() - _normalize_datetime(item.last_seen_at)).total_seconds() <= WORKER_ONLINE_SECONDS
+                    and _is_future(item.last_seen_at, _utcnow() - timedelta(seconds=WORKER_ONLINE_SECONDS))
                     else "offline"
                 ),
             }
