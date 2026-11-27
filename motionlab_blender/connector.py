@@ -28,6 +28,10 @@ class ConnectorError(RuntimeError):
     pass
 
 
+class LeaseLostError(ConnectorError):
+    """The server rejected an operation because its job lease was fenced."""
+
+
 class ConnectorClient:
     def __init__(self, base_url, token, timeout=DEFAULT_REQUEST_TIMEOUT):
         parsed = urlparse(base_url)
@@ -64,7 +68,11 @@ class ConnectorClient:
         try:
             with build_opener(_NoRedirectHandler).open(request, timeout=self.timeout) as response:
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            if exc.code == 409:
+                raise LeaseLostError("MotionLab job lease is no longer valid.") from exc
+            raise ConnectorError("MotionLab service request failed.") from exc
+        except (URLError, TimeoutError) as exc:
             raise ConnectorError("MotionLab service request failed.") from exc
 
         if len(raw) > MAX_RESPONSE_BYTES:
@@ -173,6 +181,11 @@ class NetworkWorker:
                             self._active_job["lease_token"],
                         )
                     self._last_heartbeat = now
+                except LeaseLostError:
+                    # The job has been fenced and may be redelivered. The Blender
+                    # project ledger makes replay safe by job ID.
+                    self._active_job = None
+                    self._last_heartbeat = 0.0
                 except ConnectorError:
                     # The next cycle retries. The server expires the lease if the
                     # worker cannot renew it, preventing a permanently stuck job.
@@ -206,6 +219,16 @@ class NetworkWorker:
             job_id, result = item
             try:
                 self.client.submit_result(job_id, result)
+            except LeaseLostError:
+                # A fenced result cannot ever be accepted with its old token.
+                # Drop it and allow the server to redeliver; Blender's saved
+                # job ledger prevents duplicate scene mutations on replay.
+                if self._active_job is not None and self._active_job["id"] == job_id:
+                    self._active_job = None
+                    self._last_heartbeat = 0.0
+                if from_queue:
+                    self._results.task_done()
+                return
             except ConnectorError:
                 # Retain the failed item without racing a concurrent queue producer.
                 self._retry_result = item
