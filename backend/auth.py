@@ -513,7 +513,8 @@ def build_auth_router(
         payload = []
         for item in installations:
             last_seen = _aware(item.last_seen_at)
-            online = last_seen is not None and (now - last_seen).total_seconds() <= 30
+            age_seconds = (now - last_seen).total_seconds() if last_seen is not None else None
+            online = age_seconds is not None and 0 <= age_seconds <= 30
             payload.append({
                 "installation_id": item.id,
                 "name": item.name,
@@ -580,6 +581,12 @@ def build_auth_router(
         )
         if installation is None:
             raise HTTPException(status_code=404, detail="Installation not found.")
+        # Preserve the worker's lock order: installation, lease, then job.
+        lease = session.scalar(
+            select(WorkerLease)
+            .where(WorkerLease.installation_id == installation_id)
+            .with_for_update()
+        )
         if installation.revoked_at is None:
             installation.revoked_at = utcnow()
             assignments = session.scalars(
@@ -594,7 +601,6 @@ def build_auth_router(
                     if grant is not None:
                         session.delete(grant)
                     session.delete(assignment)
-            lease = session.get(WorkerLease, installation_id)
             if lease is not None:
                 lease.active_job_id = None
                 lease.lease_expires_at = None
