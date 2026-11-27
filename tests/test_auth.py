@@ -5,6 +5,9 @@ from fastapi.testclient import TestClient
 from backend.app import (
     BrowserSession,
     MagicLinkChallenge,
+    Installation,
+    WorkerLease,
+    _token_hash,
     Project,
     UserAccount,
     Workspace,
@@ -229,3 +232,61 @@ def test_production_requires_explicit_https_app_origin(monkeypatch):
             database_url="postgresql+psycopg://motionlab:secret@localhost/motionlab",
             initialize_schema=False,
         )
+
+
+
+def test_browser_can_register_monitor_and_revoke_own_blender_installation(tmp_path):
+    client, app = auth_client(tmp_path)
+    request_link(client, "device-owner@example.com")
+    verify(client, get_token(app))
+
+    created = client.post(
+        "/v1/app/installations",
+        headers=ORIGIN,
+        json={"name": "Hacky laptop"},
+    )
+    assert created.status_code == 201, created.text
+    secret = created.json()
+    assert secret["installation_id"].startswith("ins_")
+    assert secret["access_token"]
+
+    with app.state.session_factory() as session:
+        installation = session.get(Installation, secret["installation_id"])
+        assert installation is not None
+        assert installation.token_hash == _token_hash(secret["access_token"])
+        assert installation.token_hash != secret["access_token"]
+        assert session.get(WorkerLease, secret["installation_id"]) is not None
+
+    listed = client.get("/v1/app/installations")
+    assert listed.status_code == 200
+    assert listed.json()["installations"][0]["status"] == "offline"
+
+    worker_headers = {"Authorization": "Bearer " + secret["access_token"]}
+    heartbeat = client.post("/v1/worker/heartbeat", headers=worker_headers, json={})
+    assert heartbeat.status_code == 200, heartbeat.text
+    online = client.get("/v1/app/installations").json()["installations"][0]
+    assert online["status"] == "online"
+    assert online["last_seen_at"]
+
+    revoked = client.post(
+        f"/v1/app/installations/{secret['installation_id']}/revoke",
+        headers=ORIGIN,
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert client.get("/v1/app/installations").json()["installations"][0]["status"] == "revoked"
+    assert client.post("/v1/worker/heartbeat", headers=worker_headers, json={}).status_code == 401
+
+
+def test_browser_installation_mutations_require_same_origin_and_valid_name(tmp_path):
+    client, app = auth_client(tmp_path)
+    request_link(client, "device-owner@example.com")
+    verify(client, get_token(app))
+
+    missing_origin = client.post("/v1/app/installations", json={"name": "Laptop"})
+    assert missing_origin.status_code == 403
+    invalid_name = client.post(
+        "/v1/app/installations",
+        headers=ORIGIN,
+        json={"name": "   "},
+    )
+    assert invalid_name.status_code == 422
