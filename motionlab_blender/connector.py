@@ -76,6 +76,17 @@ class ConnectorClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ConnectorError("MotionLab service returned invalid JSON.") from exc
 
+    def heartbeat(self, job_id=None, lease_token=None):
+        payload = {}
+        if job_id is not None or lease_token is not None:
+            if not job_id or not lease_token:
+                raise ValueError("job_id and lease_token must be supplied together.")
+            payload = {"job_id": job_id, "lease_token": lease_token}
+        response = self._request("POST", "/v1/worker/heartbeat", payload)
+        if not isinstance(response, dict) or response.get("ok") is not True:
+            raise ConnectorError("MotionLab service returned an invalid heartbeat response.")
+        return response
+
     def fetch_next_job(self):
         payload = self._request("GET", "/v1/jobs/next")
         if payload is None:
@@ -102,13 +113,18 @@ class ConnectorClient:
 class NetworkWorker:
     """Polls the service and submits results without accessing bpy."""
 
-    def __init__(self, client, on_job, poll_interval=5.0):
+    def __init__(self, client, on_job, poll_interval=5.0, heartbeat_interval=15.0):
+        if poll_interval <= 0 or heartbeat_interval <= 0:
+            raise ValueError("Worker intervals must be positive.")
         self.client = client
         self.on_job = on_job
-        self.poll_interval = poll_interval
+        self.poll_interval = float(poll_interval)
+        self.heartbeat_interval = float(heartbeat_interval)
         self._stop = threading.Event()
         self._results = queue.Queue(maxsize=MAX_PENDING_RESULTS)
         self._retry_result = None
+        self._active_job = None
+        self._last_heartbeat = 0.0
         self._thread = None
 
     def start(self):
@@ -146,17 +162,34 @@ class NetworkWorker:
             if self._stop.is_set():
                 break
 
+            now = time.monotonic()
+            if now - self._last_heartbeat >= self.heartbeat_interval:
+                try:
+                    if self._active_job is None:
+                        self.client.heartbeat()
+                    else:
+                        self.client.heartbeat(
+                            self._active_job["id"],
+                            self._active_job["lease_token"],
+                        )
+                    self._last_heartbeat = now
+                except ConnectorError:
+                    # The next cycle retries. The server expires the lease if the
+                    # worker cannot renew it, preventing a permanently stuck job.
+                    pass
+
             # Stop accepting work while result delivery is backlogged.
-            if self.can_accept_result():
+            if self.can_accept_result() and self._active_job is None:
                 try:
                     job = self.client.fetch_next_job()
                     if job is not None:
                         self.on_job(job)
+                        self._active_job = job
                 except ConnectorError:
-                    # Retry on the next poll. UI status reporting is a later increment.
+                    # Retry on the next poll.
                     pass
 
-            self._stop.wait(self.poll_interval)
+            self._stop.wait(min(self.poll_interval, self.heartbeat_interval))
 
     def _flush_results(self):
         while not self._stop.is_set():
@@ -180,5 +213,8 @@ class NetworkWorker:
                     self._results.task_done()
                 return
             else:
+                if self._active_job is not None and self._active_job["id"] == job_id:
+                    self._active_job = None
+                    self._last_heartbeat = 0.0
                 if from_queue:
                     self._results.task_done()
