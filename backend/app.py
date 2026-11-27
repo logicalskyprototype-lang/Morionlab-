@@ -28,6 +28,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 
 DEFAULT_LEASE_SECONDS = 60
+WORKER_ONLINE_SECONDS = 30
 JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 INSTALLATION_ID_PATTERN = re.compile(r"^ins_[a-f0-9]{32}$")
 
@@ -97,6 +98,7 @@ class Installation(Base):
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class JobAssignment(Base):
@@ -401,6 +403,27 @@ class JobRequest(BaseModel):
             if not _is_finite_number(axis) or abs(axis) > 100000:
                 raise ValueError("Location contains an invalid coordinate.")
         return {"name": name.strip(), "size": float(size), "location": [float(x) for x in location]}
+
+
+class WorkerHeartbeatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str | None = None
+    lease_token: str | None = None
+
+    @field_validator("job_id")
+    @classmethod
+    def valid_job_id(cls, value: str | None) -> str | None:
+        if value is not None and not JOB_ID_PATTERN.fullmatch(value):
+            raise ValueError("Invalid job ID.")
+        return value
+
+    @field_validator("lease_token")
+    @classmethod
+    def valid_lease_token(cls, value: str | None) -> str | None:
+        if value is not None and (not value or len(value) > 128):
+            raise ValueError("Invalid lease token.")
+        return value
 
 
 class ResultRequest(BaseModel):
@@ -990,9 +1013,19 @@ def create_app(
             .order_by(Installation.created_at.desc(), Installation.id.desc())
         ).all()
         return {"installations": [
-            {"installation_id": item.id, "name": item.name,
-             "created_at": item.created_at.isoformat(),
-             "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None}
+            {
+                "installation_id": item.id,
+                "name": item.name,
+                "created_at": item.created_at.isoformat(),
+                "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None,
+                "last_seen_at": item.last_seen_at.isoformat() if item.last_seen_at else None,
+                "status": (
+                    "online"
+                    if item.last_seen_at is not None
+                    and (_utcnow() - _normalize_datetime(item.last_seen_at)).total_seconds() <= WORKER_ONLINE_SECONDS
+                    else "offline"
+                ),
+            }
             for item in installations
         ]}
 
@@ -1192,6 +1225,65 @@ def create_app(
             for event in events
         ]}
 
+    @app.post("/v1/worker/heartbeat")
+    def worker_heartbeat(
+        payload: WorkerHeartbeatRequest,
+        _installation: str = Depends(require_addon),
+        session: Session = Depends(get_session),
+    ):
+        if (payload.job_id is None) != (payload.lease_token is None):
+            raise HTTPException(status_code=422, detail="job_id and lease_token must be supplied together.")
+
+        now = _utcnow()
+        installation = session.scalar(
+            select(Installation)
+            .where(Installation.id == _installation)
+            .with_for_update()
+        )
+        if installation is None or installation.revoked_at is not None:
+            raise HTTPException(status_code=401, detail="Invalid add-on credentials.")
+        workspace = session.get(Workspace, installation.workspace_id)
+        if workspace is None or workspace.status != "active":
+            raise HTTPException(status_code=403, detail="Installation workspace is not active.")
+
+        installation.last_seen_at = now
+        lease_expires_at = None
+        if payload.job_id is not None:
+            # Keep lock order consistent with result submission: worker lease, then job.
+            lease = session.scalar(
+                select(WorkerLease)
+                .where(WorkerLease.installation_id == _installation)
+                .with_for_update()
+            )
+            job = session.scalar(
+                select(Job).where(Job.id == payload.job_id).with_for_update()
+            )
+            grant = session.get(JobLeaseGrant, payload.job_id)
+            if (
+                lease is None
+                or lease.active_job_id != payload.job_id
+                or job is None
+                or job.status != "leased"
+                or grant is None
+                or grant.installation_id != _installation
+                or not hmac.compare_digest(grant.token_hash, _token_hash(payload.lease_token))
+                or not _is_future(lease.lease_expires_at, now)
+                or not _is_future(grant.expires_at, now)
+            ):
+                raise HTTPException(status_code=409, detail="Job lease is no longer active for this installation.")
+
+            lease_expires_at = now + timedelta(seconds=lease_seconds)
+            lease.lease_expires_at = lease_expires_at
+            job.lease_expires_at = lease_expires_at
+            grant.expires_at = lease_expires_at
+
+        session.commit()
+        return {
+            "ok": True,
+            "server_time": now.isoformat(),
+            "lease_expires_at": lease_expires_at.isoformat() if lease_expires_at else None,
+        }
+
     @app.get("/v1/jobs/next")
     def next_job(_installation: str = Depends(require_addon), session: Session = Depends(get_session)):
         now = _utcnow()
@@ -1202,12 +1294,14 @@ def create_app(
         )
         if lease is None:
             raise HTTPException(status_code=503, detail="Worker lease state is unavailable.")
-        if lease.active_job_id and _is_future(lease.lease_expires_at, now):
-            return {"job": None}
 
         installation = session.get(Installation, _installation)
-        if installation is None:
+        if installation is None or installation.revoked_at is not None:
             raise HTTPException(status_code=401, detail="Invalid add-on credentials.")
+        installation.last_seen_at = now
+        if lease.active_job_id and _is_future(lease.lease_expires_at, now):
+            session.commit()
+            return {"job": None}
         assigned_job_ids = select(JobAssignment.job_id).where(
             JobAssignment.installation_id == _installation
         )
