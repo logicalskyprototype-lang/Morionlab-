@@ -208,6 +208,7 @@ function placeholderPage(page) {
 
 function render(page = currentPage) {
   if (authState.status !== "authenticated") return;
+  if (page !== "connections") newInstallationSecret = null;
   currentPage = page;
   breadcrumb.textContent = pages[page] || "Overview";
   document.querySelectorAll(".nav-item[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === page));
@@ -307,6 +308,9 @@ document.addEventListener("click", async event => {
     try { await api("/v1/auth/logout", { method: "POST", headers: { "Origin": location.origin } }); } catch {}
     authState.status = "anonymous";
     projects = [];
+    installations = [];
+    newInstallationSecret = null;
+    if (connectionRefreshTimer) clearInterval(connectionRefreshTimer);
     showLogin("You have signed out.");
   }
 });
@@ -329,7 +333,8 @@ document.addEventListener("submit", async event => {
       headers: { "Origin": location.origin },
       body: JSON.stringify({ name })
     });
-    await loadInstallations();
+    try { await loadInstallations(); }
+    catch (error) { message.textContent = "Device registered. Status refresh failed: " + error.message; }
     render("connections");
   } catch (error) {
     message.textContent = error.message;
