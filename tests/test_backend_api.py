@@ -343,7 +343,8 @@ def test_worker_heartbeat_sets_presence_and_renews_active_lease(tmp_path):
         grant = session.get(JobLeaseGrant, job_id)
         assert job.lease_expires_at == worker_lease.lease_expires_at
         assert worker_lease.lease_expires_at == grant.expires_at
-        assert worker_lease.lease_expires_at > old_expiry
+        from backend.app import _is_future
+        assert _is_future(worker_lease.lease_expires_at, old_expiry)
 
 
 def test_worker_heartbeat_rejects_partial_or_stale_lease_credentials(tmp_path):
