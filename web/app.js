@@ -98,6 +98,7 @@ async function bootstrapAuth() {
       document.querySelector("#profile-email").textContent = user.email;
       document.querySelector("#app").style.display = "";
       await loadProjects();
+      await loadInstallations().catch(() => { installations = []; });
       render("overview");
     } catch (error) { authState.status = "anonymous"; showLogin(error.message); }
   } else showLogin();
@@ -124,7 +125,7 @@ function overview() {
   <div class="metrics-grid">
     <div class="metric-card"><div class="metric-label">Total projects <span>↗</span></div><div class="metric-value">${String(projects.length).padStart(2, "0")}</div><div class="metric-note">Across all creative work</div></div>
     <div class="metric-card"><div class="metric-label">Active sessions <span class="metric-glyph">◷</span></div><div class="metric-value">—</div><div class="metric-note">No active sessions</div></div>
-    <div class="metric-card"><div class="metric-label">Blender connections <span class="metric-glyph">◇</span></div><div class="metric-value">00 <small>/ 03</small></div><div class="metric-note"><span class="muted-dot"></span> No devices connected</div></div>
+    <div class="metric-card"><div class="metric-label">Blender connections <span class="metric-glyph">◇</span></div><div class="metric-value">${String(installations.filter(item => item.status !== "revoked").length).padStart(2, "0")}</div><div class="metric-note"><span class="muted-dot"></span> ${installations.filter(item => item.status === "online").length} online now</div></div>
     <div class="metric-card"><div class="metric-label">Cloud renders <span class="metric-glyph">▤</span></div><div class="metric-value">—</div><div class="metric-note">Remote rendering not enabled</div></div>
   </div>
   <section class="section-block">
@@ -148,7 +149,7 @@ function projectsPage() {
   return `<div class="page-heading"><div><div class="eyebrow accent">YOUR CREATIVE WORK</div><h1>Projects</h1><p class="intro">Every idea, scene and experiment in one place.</p></div><button class="primary-button" id="new-project">＋ New project</button></div>
   <div class="toolbar"><div class="search-box"><span>⌕</span><input id="project-search" type="search" placeholder="Search projects..." aria-label="Search projects"></div><div class="filter-chip">All projects <span>⌄</span></div><div class="view-toggle">▦ <span>☷</span></div></div>
   <div class="projects-grid projects-page-grid" id="projects-list">${projects.map(projectCard).join("")}</div>
-  <p class="demo-note"><span>ⓘ</span> These are sample projects for the interface preview. Project persistence is not connected yet.</p>`;
+  <p class="demo-note"><span>ⓘ</span> Projects are saved to your MotionLab workspace.</p>`;
 }
 
 function workspacePage() {
@@ -254,6 +255,14 @@ document.addEventListener("click", async event => {
   const revokeButton = event.target.closest("[data-revoke-installation]");
   const copyTokenButton = event.target.closest("[data-copy-token]");
   const dismissTokenButton = event.target.closest("[data-dismiss-token]");
+  const refreshButton = event.target.closest("#refresh-installations");
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "Refreshing…";
+    try { await loadInstallations(); render("connections"); }
+    catch (error) { alert(error.message); refreshButton.disabled = false; refreshButton.textContent = "↻ Refresh status"; }
+    return;
+  }
   if (revokeButton) {
     const installationId = revokeButton.dataset.revokeInstallation;
     if (!confirm("Revoke this Blender installation? Its credentials will stop working immediately.")) return;
