@@ -278,3 +278,88 @@ def test_extremely_large_numbers_are_rejected_without_server_error(tmp_path):
             headers=ADMIN,
         )
         assert response.status_code == 422
+
+
+
+def test_worker_heartbeat_sets_presence_and_renews_active_lease(tmp_path):
+    from datetime import timedelta
+    from backend.app import _utcnow
+
+    client, app, _, _ = client_for(tmp_path)
+    workspace = client.post(
+        "/v1/admin/workspaces", headers=ADMIN, json={"name": "Heartbeat workspace"}
+    ).json()
+    workspace_headers = {"Authorization": "Bearer " + workspace["access_token"]}
+    created = client.post(
+        "/v1/workspaces/installations",
+        headers=workspace_headers,
+        json={"name": "Laptop Blender"},
+    )
+    assert created.status_code == 201
+    installation = created.json()
+    addon = {"Authorization": "Bearer " + installation["access_token"]}
+
+    before = client.get("/v1/workspaces/installations", headers=workspace_headers).json()
+    assert before["installations"][0]["status"] == "offline"
+
+    idle_heartbeat = client.post("/v1/worker/heartbeat", headers=addon, json={})
+    assert idle_heartbeat.status_code == 200
+    assert idle_heartbeat.json()["lease_expires_at"] is None
+    online = client.get("/v1/workspaces/installations", headers=workspace_headers).json()
+    assert online["installations"][0]["status"] == "online"
+    assert online["installations"][0]["last_seen_at"]
+
+    queued = client.post(
+        "/v1/workspaces/jobs",
+        headers=workspace_headers,
+        json=approved_job(installation["installation_id"]),
+    )
+    assert queued.status_code == 201
+    job_id = queued.json()["id"]
+    leased = client.get("/v1/jobs/next", headers=addon).json()["job"]
+
+    old_expiry = _utcnow() + timedelta(seconds=10)
+    with app.state.session_factory() as session:
+        job = session.get(Job, job_id)
+        worker_lease = session.get(WorkerLease, installation["installation_id"])
+        grant = session.get(JobLeaseGrant, job_id)
+        job.lease_expires_at = old_expiry
+        worker_lease.lease_expires_at = old_expiry
+        grant.expires_at = old_expiry
+        session.commit()
+
+    renewed = client.post(
+        "/v1/worker/heartbeat",
+        headers=addon,
+        json={"job_id": job_id, "lease_token": leased["lease_token"]},
+    )
+    assert renewed.status_code == 200, renewed.text
+    renewed_expiry = renewed.json()["lease_expires_at"]
+    assert renewed_expiry
+
+    with app.state.session_factory() as session:
+        job = session.get(Job, job_id)
+        worker_lease = session.get(WorkerLease, installation["installation_id"])
+        grant = session.get(JobLeaseGrant, job_id)
+        assert job.lease_expires_at == worker_lease.lease_expires_at
+        assert worker_lease.lease_expires_at == grant.expires_at
+        assert worker_lease.lease_expires_at > old_expiry
+
+
+def test_worker_heartbeat_rejects_partial_or_stale_lease_credentials(tmp_path):
+    client, _, installation, addon = client_for(tmp_path)
+    partial = client.post(
+        "/v1/worker/heartbeat",
+        headers=addon,
+        json={"job_id": "ml_missing"},
+    )
+    assert partial.status_code == 422
+
+    job_id = enqueue(client, installation["installation_id"])
+    leased = client.get("/v1/jobs/next", headers=addon).json()["job"]
+    stale = client.post(
+        "/v1/worker/heartbeat",
+        headers=addon,
+        json={"job_id": job_id, "lease_token": "wrong-token"},
+    )
+    assert stale.status_code == 409
