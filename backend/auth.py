@@ -47,6 +47,19 @@ class MagicLinkVerifyRequest(BaseModel):
     token: str = Field(min_length=20, max_length=128)
 
 
+class BrowserInstallationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Installation name is required.")
+        return value
+
+
 class BrowserProjectCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=100)
@@ -132,6 +145,11 @@ def build_auth_router(
     Workspace,
     Project,
     AuditEvent,
+    Installation,
+    WorkerLease,
+    JobAssignment,
+    Job,
+    JobLeaseGrant,
     utcnow,
     token_hash,
     record_audit,
@@ -476,6 +494,121 @@ def build_auth_router(
             samesite="lax",
         )
         return {"logged_out": True}
+
+    @router.get("/v1/app/installations")
+    def list_browser_installations(
+        request: Request,
+        session: Session = Depends(get_session),
+    ):
+        identity = resolve_identity(request, session)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        _user, membership, _workspace, _browser_session = identity
+        installations = session.scalars(
+            select(Installation)
+            .where(Installation.workspace_id == membership.workspace_id)
+            .order_by(Installation.created_at.desc(), Installation.id.desc())
+        ).all()
+        now = utcnow()
+        payload = []
+        for item in installations:
+            last_seen = _aware(item.last_seen_at)
+            online = last_seen is not None and (now - last_seen).total_seconds() <= 30
+            payload.append({
+                "installation_id": item.id,
+                "name": item.name,
+                "created_at": item.created_at.isoformat(),
+                "last_seen_at": item.last_seen_at.isoformat() if item.last_seen_at else None,
+                "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None,
+                "status": "revoked" if item.revoked_at else "online" if online else "offline",
+            })
+        session.commit()
+        return {"installations": payload}
+
+    @router.post("/v1/app/installations", status_code=status.HTTP_201_CREATED)
+    def create_browser_installation(
+        payload: BrowserInstallationCreate,
+        request: Request,
+        session: Session = Depends(get_session),
+    ):
+        check_origin(request)
+        identity = resolve_identity(request, session)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        user, membership, _workspace, _browser_session = identity
+        installation_id = "ins_" + uuid.uuid4().hex
+        access_token = secrets.token_urlsafe(32)
+        installation = Installation(
+            id=installation_id,
+            workspace_id=membership.workspace_id,
+            name=payload.name,
+            token_hash=token_hash(access_token),
+            created_at=utcnow(),
+        )
+        session.add(installation)
+        session.add(WorkerLease(installation_id=installation_id))
+        record_audit(
+            session,
+            event_type="installation.created",
+            actor_type="user",
+            actor_id=user.id,
+            target_type="installation",
+            target_id=installation_id,
+            details={"name": payload.name},
+            workspace_id=membership.workspace_id,
+        )
+        session.commit()
+        # The raw token is returned only once. It is never stored in plaintext.
+        return {"installation_id": installation_id, "name": payload.name, "access_token": access_token}
+
+    @router.post("/v1/app/installations/{installation_id}/revoke")
+    def revoke_browser_installation(
+        installation_id: str,
+        request: Request,
+        session: Session = Depends(get_session),
+    ):
+        check_origin(request)
+        identity = resolve_identity(request, session)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        user, membership, _workspace, _browser_session = identity
+        installation = session.scalar(
+            select(Installation).where(
+                Installation.id == installation_id,
+                Installation.workspace_id == membership.workspace_id,
+            ).with_for_update()
+        )
+        if installation is None:
+            raise HTTPException(status_code=404, detail="Installation not found.")
+        if installation.revoked_at is None:
+            installation.revoked_at = utcnow()
+            assignments = session.scalars(
+                select(JobAssignment).where(JobAssignment.installation_id == installation_id)
+            ).all()
+            for assignment in assignments:
+                job = session.get(Job, assignment.job_id)
+                if job is not None and job.workspace_id == membership.workspace_id and job.status in {"queued", "leased"}:
+                    job.status = "queued"
+                    job.lease_expires_at = None
+                    grant = session.get(JobLeaseGrant, job.id)
+                    if grant is not None:
+                        session.delete(grant)
+                    session.delete(assignment)
+            lease = session.get(WorkerLease, installation_id)
+            if lease is not None:
+                lease.active_job_id = None
+                lease.lease_expires_at = None
+            record_audit(
+                session,
+                event_type="installation.revoked",
+                actor_type="user",
+                actor_id=user.id,
+                target_type="installation",
+                target_id=installation_id,
+                workspace_id=membership.workspace_id,
+            )
+            session.commit()
+        return {"revoked": True}
 
     @router.get("/v1/app/projects")
     def list_browser_projects(
