@@ -37,8 +37,11 @@ def test_migration_creates_fresh_schema_and_is_repeatable(tmp_path):
             "motionlab_magic_link_challenges",
             "motionlab_auth_rate_limit_buckets",
         }.issubset(tables)
+        assert "last_seen_at" in {
+            column["name"] for column in inspect(engine).get_columns("motionlab_installations")
+        }
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_public_identity"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0006_worker_heartbeat"
             assert connection.execute(
                 text("SELECT status FROM motionlab_workspaces WHERE id = 'wsp_legacy'")
             ).scalar_one() == "active"
@@ -83,7 +86,7 @@ def test_workspace_migration_adopts_existing_legacy_rows_without_losing_data(tmp
                 text("SELECT workspace_id FROM motionlab_jobs WHERE id = 'ml_existing'")
             ).scalar_one()
             assert job == "wsp_legacy"
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0005_public_identity"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0006_worker_heartbeat"
     finally:
         engine.dispose()
 
