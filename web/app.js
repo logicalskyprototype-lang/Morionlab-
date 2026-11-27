@@ -24,6 +24,9 @@ const pages = {
 let currentPage = "overview";
 let authState = { status: "loading", email: null };
 let selectedTemplate = "3d_scene";
+let installations = [];
+let newInstallationSecret = null;
+let connectionRefreshTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", ...options,
@@ -48,6 +51,11 @@ function showLogin(message = "") {
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   });
+}
+
+async function loadInstallations() {
+  const result = await api("/v1/app/installations");
+  installations = result.installations || [];
 }
 
 async function loadProjects() {
@@ -155,6 +163,35 @@ function workspacePage() {
   </div><div class="editor-note"><span>ⓘ</span> Interface preview only. Scene editing, asset loading and timeline playback activate after the Blender bridge is connected.</div>`;
 }
 
+function connectionsPage() {
+  const active = installations.filter(item => item.status !== "revoked");
+  const onlineCount = active.filter(item => item.status === "online").length;
+  const secretPanel = newInstallationSecret ? `
+    <div class="installation-secret" role="status">
+      <div><strong>Installation token created</strong><p>Copy this token now and paste it into the Blender add-on. It will not be shown again after you leave or reload this page.</p></div>
+      <code id="installation-token">${escapeHtml(newInstallationSecret.access_token)}</code>
+      <div class="secret-actions"><button class="secondary-button" data-copy-token>Copy token</button><button class="text-action" data-dismiss-token>Dismiss</button></div>
+    </div>` : "";
+  const cards = installations.length ? installations.map(item => `
+    <article class="installation-card">
+      <div class="installation-card-top"><div class="installation-device-icon">▧</div><span class="device-status ${item.status}"><i></i>${item.status}</span></div>
+      <h3>${escapeHtml(item.name)}</h3>
+      <p class="device-id">${escapeHtml(item.installation_id)}</p>
+      <div class="device-meta"><span>Last seen</span><strong>${item.last_seen_at ? escapeHtml(new Date(item.last_seen_at).toLocaleString()) : "Never connected"}</strong></div>
+      <div class="device-meta"><span>Added</span><strong>${escapeHtml(new Date(item.created_at).toLocaleDateString())}</strong></div>
+      ${item.status === "revoked" ? '<div class="revoked-note">Access revoked</div>' : `<button class="danger-text" data-revoke-installation="${escapeHtml(item.installation_id)}">Revoke access</button>`}
+    </article>`).join("") : '<div class="connections-empty"><div class="empty-icon">◇</div><strong>No Blender installations yet</strong><p>Register this computer, then paste its one-time token into the MotionLab add-on.</p></div>';
+  return `
+    <div class="page-heading connections-heading"><div><div class="eyebrow accent">LOCAL EXECUTION / TRUSTED DEVICES</div><h1>Connections</h1><p class="intro">Connect Blender on your own computer. Local execution remains the default; cloud execution is not enabled here.</p></div><button class="secondary-button" id="refresh-installations">↻ Refresh status</button></div>
+    <div class="connection-summary"><div><span class="eyebrow">BLENDER INSTALLATIONS</span><strong>${String(active.length).padStart(2, "0")}</strong><small>Registered devices</small></div><div><span class="eyebrow">ONLINE NOW</span><strong>${String(onlineCount).padStart(2, "0")}</strong><small>Seen in the last 30 seconds</small></div><div><span class="eyebrow">EXECUTION POLICY</span><strong>Local first</strong><small>No cloud worker configured</small></div></div>
+    ${secretPanel}
+    <section class="connections-layout">
+      <div class="panel installation-list-panel"><div class="panel-heading"><div><div class="eyebrow">YOUR DEVICES</div><h2>Blender installations</h2></div><span class="subtle-label">AUTO-REFRESH · 15 SEC</span></div><div class="installation-list">${cards}</div></div>
+      <form class="panel register-installation-panel" id="register-installation-form"><div class="eyebrow">ADD A DEVICE</div><h2>Register Blender</h2><p>Give this installation a recognizable name, such as “Hacky laptop”.</p><label for="installation-name">Installation name</label><input id="installation-name" name="name" maxlength="80" required placeholder="My Blender workstation" /><button class="primary-button" type="submit">Generate connection token <span>→</span></button><p class="form-hint" id="installation-form-message">The token is shown once. It is stored by MotionLab as a hash.</p></form>
+    </section>
+    <section class="panel connection-instructions"><div class="eyebrow">CONNECT THE BLENDER ADD-ON</div><h2>Finish setup on your computer</h2><ol><li>Install the MotionLab Blender add-on from the repository.</li><li>Open Blender preferences and enable MotionLab Connector.</li><li>Set the MotionLab service URL and paste the token generated above.</li><li>Keep Blender open. The device should appear online within 30 seconds.</li></ol><p>Do not share the installation token. Revoke a device immediately if its token is exposed.</p></section>`;
+}
+
 function placeholderPage(page) {
   const info = {
     assets: ["ASSET LIBRARY", "Your creative assets", "A central home for models, materials, textures and reusable scene elements."],
@@ -173,8 +210,12 @@ function render(page = currentPage) {
   currentPage = page;
   breadcrumb.textContent = pages[page] || "Overview";
   document.querySelectorAll(".nav-item[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === page));
-  pageContent.innerHTML = page === "overview" ? overview() : page === "projects" ? projectsPage() : page === "workspace" ? workspacePage() : placeholderPage(page);
+  pageContent.innerHTML = page === "overview" ? overview() : page === "projects" ? projectsPage() : page === "workspace" ? workspacePage() : page === "connections" ? connectionsPage() : placeholderPage(page);
   document.querySelector("#sidebar").classList.remove("open");
+  if (connectionRefreshTimer) clearInterval(connectionRefreshTimer);
+  connectionRefreshTimer = page === "connections" ? setInterval(async () => {
+    try { await loadInstallations(); if (currentPage === "connections") render("connections"); } catch {}
+  }, 15000) : null;
 }
 
 function openModal() {
@@ -210,9 +251,44 @@ function escapeHtml(value) {
 
 document.addEventListener("click", async event => {
   const pageButton = event.target.closest("[data-page]");
+  const revokeButton = event.target.closest("[data-revoke-installation]");
+  const copyTokenButton = event.target.closest("[data-copy-token]");
+  const dismissTokenButton = event.target.closest("[data-dismiss-token]");
+  if (revokeButton) {
+    const installationId = revokeButton.dataset.revokeInstallation;
+    if (!confirm("Revoke this Blender installation? Its credentials will stop working immediately.")) return;
+    revokeButton.disabled = true;
+    try {
+      await api(`/v1/app/installations/${encodeURIComponent(installationId)}/revoke`, { method: "POST", headers: { "Origin": location.origin } });
+      await loadInstallations();
+      render("connections");
+    } catch (error) { alert(error.message); revokeButton.disabled = false; }
+    return;
+  }
+  if (copyTokenButton) {
+    try {
+      await navigator.clipboard.writeText(newInstallationSecret.access_token);
+      copyTokenButton.textContent = "Copied";
+    } catch {
+      const token = document.querySelector("#installation-token");
+      const range = document.createRange();
+      range.selectNodeContents(token);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copyTokenButton.textContent = "Select and copy";
+    }
+    return;
+  }
+  if (dismissTokenButton) { newInstallationSecret = null; render("connections"); return; }
   const newButton = event.target.closest("#new-project");
   const openButton = event.target.closest("[data-open-project]");
-  if (pageButton) render(pageButton.dataset.page);
+  if (pageButton) {
+    if (pageButton.dataset.page === "connections") {
+      try { await loadInstallations(); render("connections"); }
+      catch (error) { render("connections"); const list = document.querySelector(".installation-list"); if (list) list.innerHTML = `<p class="form-hint">${escapeHtml(error.message)}</p>`; }
+    } else render(pageButton.dataset.page);
+  }
   if (newButton) openModal();
   if (openButton) {
     selectedProject = projects.find(project => project.id === openButton.dataset.openProject) || projects[0];
@@ -227,6 +303,31 @@ document.addEventListener("click", async event => {
 });
 
 document.querySelector("#mobile-menu").addEventListener("click", () => document.querySelector("#sidebar").classList.toggle("open"));
+
+document.addEventListener("submit", async event => {
+  if (event.target.id !== "register-installation-form") return;
+  event.preventDefault();
+  const form = event.target;
+  const button = form.querySelector("button[type=submit]");
+  const message = form.querySelector("#installation-form-message");
+  const name = form.querySelector("#installation-name").value.trim();
+  if (!name) return;
+  button.disabled = true;
+  button.textContent = "Registering…";
+  try {
+    newInstallationSecret = await api("/v1/app/installations", {
+      method: "POST",
+      headers: { "Origin": location.origin },
+      body: JSON.stringify({ name })
+    });
+    await loadInstallations();
+    render("connections");
+  } catch (error) {
+    message.textContent = error.message;
+    button.disabled = false;
+    button.textContent = "Generate connection token →";
+  }
+});
 
 document.addEventListener("input", event => {
   if (event.target.id !== "project-search") return;
