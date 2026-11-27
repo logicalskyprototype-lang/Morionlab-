@@ -81,3 +81,43 @@ def test_failed_result_submission_is_retained_and_retried():
     assert client.attempts[0] == ("job-retry", result)
     assert client.attempts[1] == ("job-retry", result)
     assert worker.can_accept_result() is True
+
+
+
+def test_connector_heartbeat_sends_idle_and_active_payloads():
+    client = ConnectorClient("https://motionlab.example", "token")
+    calls = []
+    client._request = lambda method, path, payload=None: (
+        calls.append((method, path, payload)) or {"ok": True}
+    )
+
+    assert client.heartbeat() == {"ok": True}
+    assert client.heartbeat("job-1", "lease-1") == {"ok": True}
+    assert calls == [
+        ("POST", "/v1/worker/heartbeat", {}),
+        ("POST", "/v1/worker/heartbeat", {"job_id": "job-1", "lease_token": "lease-1"}),
+    ]
+
+
+def test_connector_heartbeat_requires_job_id_and_lease_token_together():
+    client = ConnectorClient("https://motionlab.example", "token")
+    with pytest.raises(ValueError):
+        client.heartbeat("job-1", None)
+    with pytest.raises(ValueError):
+        client.heartbeat(None, "lease-1")
+
+
+def test_fenced_result_is_discarded_so_job_can_be_redelivered():
+    from motionlab_blender.connector import LeaseLostError
+
+    class FencedClient:
+        def submit_result(self, job_id, result):
+            raise LeaseLostError("lease expired")
+
+    worker = NetworkWorker(FencedClient(), lambda job: None)
+    worker._active_job = {"id": "job-fenced", "lease_token": "old-token"}
+    assert worker.submit_result("job-fenced", {"status": "completed"})
+    worker._flush_results()
+
+    assert worker._active_job is None
+    assert worker.can_accept_result() is True
