@@ -18,3 +18,52 @@
 .auth-panel button:disabled{opacity:.6;cursor:wait}
 .auth-panel .auth-message{min-height:20px;color:#b9d7a9;font-size:11px;margin:15px 0}
 .auth-panel>small{display:block;color:#7f8995;font-size:10px;line-height:1.6}
+
+
+
+/* Blender installation management */
+.connections-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}
+.connection-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:24px 0}
+.connection-summary>div{display:grid;gap:7px;padding:18px;background:#191e25;border:1px solid #303844;border-radius:9px}
+.connection-summary strong{font:600 25px var(--display);color:#e3e9e2}
+.connection-summary small{font-size:10px;color:#7f8a96}
+.connections-layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(250px,.8fr);gap:15px;align-items:start}
+.installation-list-panel,.register-installation-panel,.connection-instructions{padding:20px}
+.installation-list-panel .panel-heading{margin-bottom:16px}
+.installation-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
+.installation-card{min-width:0;padding:15px;background:#171c22;border:1px solid #303844;border-radius:8px}
+.installation-card-top{display:flex;align-items:center;justify-content:space-between}
+.installation-device-icon{width:34px;height:34px;display:grid;place-items:center;background:#29332d;border-radius:8px;color:#b6e5a0;font-size:18px}
+.device-status{display:flex;align-items:center;gap:6px;font:9px var(--mono);text-transform:uppercase;color:#87929e}
+.device-status i{width:7px;height:7px;border-radius:50%;background:#7b8490}
+.device-status.online{color:#a8df8d}.device-status.online i{background:#a6f27a;box-shadow:0 0 9px #a6f27766}
+.device-status.revoked{color:#e39a9a}.device-status.revoked i{background:#d77b7b}
+.installation-card h3{font:600 13px var(--display);margin:13px 0 4px;overflow-wrap:anywhere}
+.device-id{font:8px var(--mono);color:#75808d;overflow-wrap:anywhere;margin:0 0 13px}
+.device-meta{display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid #2a3039;font-size:9px;color:#7e8996}
+.device-meta strong{font-weight:500;color:#b8c1cb;text-align:right}
+.danger-text{border:0;background:none;color:#e39a9a;font-size:9px;padding:10px 0 0;cursor:pointer}
+.danger-text:disabled{opacity:.5;cursor:wait}
+.revoked-note{font-size:9px;color:#d58f8f;padding-top:10px}
+.connections-empty{grid-column:1/-1;min-height:190px;display:grid;align-content:center;justify-items:center;text-align:center;border:1px dashed #343d48;border-radius:8px;padding:20px}
+.connections-empty strong{font:600 13px var(--display);margin:6px 0}
+.connections-empty p{max-width:310px;color:#84909c;font-size:10px;line-height:1.6}
+.register-installation-panel h2,.connection-instructions h2{font:600 17px var(--display);margin:9px 0}
+.register-installation-panel>p{font-size:10px;color:#8994a0;line-height:1.6}
+.register-installation-panel label{display:block;margin:18px 0 7px;font-size:10px;color:#c0c8d1}
+.register-installation-panel input{width:100%;height:39px;padding:0 10px;background:#11151a;border:1px solid #39414d;border-radius:6px;color:#f1f4f6;outline:none}
+.register-installation-panel input:focus{border-color:#a6f27a}
+.register-installation-panel .primary-button{width:100%;justify-content:center;margin-top:12px;padding:11px 10px;font-size:10px}
+.form-hint{font-size:9px;color:#82909b;line-height:1.6;margin-top:12px}
+.installation-secret{display:grid;gap:11px;padding:17px;margin:18px 0;background:#252e27;border:1px solid #52694c;border-radius:9px}
+.installation-secret strong{font:600 13px var(--display);color:#d9efd0}
+.installation-secret p{font-size:10px;color:#b0bcae;line-height:1.6;margin:5px 0 0}
+.installation-secret code{display:block;overflow-wrap:anywhere;padding:12px;background:#111713;border:1px solid #465b42;border-radius:6px;color:#c7f3b4;font-size:10px;user-select:all}
+.secret-actions{display:flex;align-items:center;gap:14px}
+.secret-actions .secondary-button{padding:8px 12px;font-size:9px}
+.secret-actions .text-action{font-size:9px}
+.connection-instructions{margin-top:15px}
+.connection-instructions ol{padding-left:19px;color:#aeb8c3;font-size:10px;line-height:1.9}
+.connection-instructions>p{font-size:9px;color:#87929e;line-height:1.6;border-top:1px solid #303844;padding-top:12px;margin-top:12px}
+@media(max-width:900px){.connections-layout{grid-template-columns:1fr}.register-installation-panel{max-width:none}}
+@media(max-width:600px){.connections-heading{align-items:flex-start;flex-direction:column}.connection-summary{grid-template-columns:1fr 1fr}.connection-summary>div:last-child{grid-column:1/-1}.installation-list{grid-template-columns:1fr}.installation-list-panel,.register-installation-panel,.connection-instructions{padding:15px}}
