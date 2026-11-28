@@ -97,6 +97,12 @@ with tempfile.TemporaryDirectory() as temp_dir:
     assert replayed_after_reload == result
     assert len(bpy.context.scene.objects) == 1
 
+    # A re-delivered job has a fresh server lease but the same durable job ID.
+    redelivered_job = dict(job, lease_token="replacement-lease-token")
+    replayed_after_restart = execute_command(redelivered_job)
+    assert replayed_after_restart == result
+    assert len(bpy.context.scene.objects) == 1
+
     alternate_scene = bpy.data.scenes.new("MotionLab Alternate Scene")
     with bpy.context.temp_override(scene=alternate_scene):
         replayed_from_other_scene = execute_command(job)
@@ -124,6 +130,7 @@ print("MOTIONLAB_RESULT_RELEASED_AFTER_SAVE=PASS")
 print("MOTIONLAB_SAVE_HANDLER_PERSISTS_AFTER_PROJECT_LOAD=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_SAME_SESSION=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_AFTER_RELOAD=PASS")
+print("MOTIONLAB_REDELIVERY_REPLAY=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_CROSS_SCENE=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_AFTER_DELETE=PASS")
 print("MOTIONLAB_CUBE_IDEMPOTENCY_CONFLICT=PASS")

@@ -1,9 +1,16 @@
+import io
+import json
+import threading
+
 import pytest
 
 from motionlab_blender.connector import (
     MAX_PENDING_RESULTS,
+    ConnectorError,
     ConnectorClient,
+    LeaseLostError,
     NetworkWorker,
+    ResultConflictError,
 )
 
 
@@ -40,6 +47,50 @@ def test_redirect_handler_refuses_redirects():
     assert handler.redirect_request(
         None, None, 302, "Found", {}, "https://other.example/"
     ) is None
+
+
+def _mock_http_409(monkeypatch, detail):
+    from urllib.error import HTTPError
+
+    class _FailingOpener:
+        def open(self, request, timeout):
+            body = json.dumps({"detail": detail}).encode("utf-8")
+            raise HTTPError(
+                request.full_url,
+                409,
+                "Conflict",
+                {},
+                io.BytesIO(body),
+            )
+
+    monkeypatch.setattr(
+        "motionlab_blender.connector.build_opener",
+        lambda *_args: _FailingOpener(),
+    )
+
+
+def test_result_409_lease_failures_are_classified_as_lease_lost(monkeypatch):
+    _mock_http_409(monkeypatch, "Job lease is no longer active for this installation.")
+    client = ConnectorClient("https://motionlab.example", "token")
+
+    with pytest.raises(LeaseLostError):
+        client.submit_result("job-1", {"job_id": "job-1"})
+
+
+def test_result_409_conflicting_result_is_not_classified_as_lease_lost(monkeypatch):
+    _mock_http_409(monkeypatch, "A different result was already accepted for this job.")
+    client = ConnectorClient("https://motionlab.example", "token")
+
+    with pytest.raises(ResultConflictError, match="different result"):
+        client.submit_result("job-1", {"job_id": "job-1"})
+
+
+def test_unrelated_409_is_not_classified_as_lease_lost(monkeypatch):
+    _mock_http_409(monkeypatch, "Unexpected conflict.")
+    client = ConnectorClient("https://motionlab.example", "token")
+
+    with pytest.raises(ConnectorError, match="Unexpected conflict"):
+        client.fetch_next_job()
 
 
 def test_worker_result_queue_is_bounded():
@@ -84,10 +135,106 @@ def test_failed_result_submission_is_retained_and_retried():
 
 
 
+def test_worker_shutdown_drains_a_transiently_failed_result():
+    class _FlakyClient:
+        def __init__(self):
+            self.attempts = []
+
+        def heartbeat(self):
+            return {"ok": True}
+
+        def fetch_next_job(self):
+            return None
+
+        def submit_result(self, job_id, result):
+            self.attempts.append((job_id, result))
+            if len(self.attempts) == 1:
+                raise ConnectorError("temporary network failure")
+            return {"accepted": True}
+
+    client = _FlakyClient()
+    worker = NetworkWorker(
+        client,
+        lambda job: None,
+        poll_interval=0.01,
+        heartbeat_interval=0.01,
+    )
+    result = {"status": "completed"}
+    assert worker.submit_result("job-stop", result)
+
+    worker.start()
+    assert worker.stop(timeout=1.0) is True
+    assert client.attempts == [("job-stop", result), ("job-stop", result)]
+
+
+def test_worker_registers_active_job_before_callback_and_flushes_fast_result():
+    job = {"id": "job-fast", "lease_token": "lease-fast"}
+    submitted = threading.Event()
+    observed_active = []
+
+    class _ImmediateClient:
+        def __init__(self):
+            self.fetched = False
+
+        def heartbeat(self):
+            return {"ok": True}
+
+        def fetch_next_job(self):
+            if self.fetched:
+                return None
+            self.fetched = True
+            return job
+
+        def submit_result(self, job_id, result):
+            assert job_id == job["id"]
+            submitted.set()
+            return {"accepted": True}
+
+    worker_ref = {}
+
+    def on_job(received):
+        worker = worker_ref["worker"]
+        observed_active.append(worker._active_job is received)
+        assert worker.submit_result(received["id"], {"status": "completed"})
+
+    worker = NetworkWorker(
+        _ImmediateClient(),
+        on_job,
+        poll_interval=0.01,
+        heartbeat_interval=0.01,
+    )
+    worker_ref["worker"] = worker
+    worker.start()
+
+    assert submitted.wait(1.0)
+    assert worker.stop(timeout=1.0) is True
+    assert observed_active == [True]
+    assert worker._active_job is None
+
+
+def test_result_conflict_is_retained_and_blocks_new_scene_work(caplog):
+    class _ConflictingClient:
+        def submit_result(self, job_id, result):
+            raise ResultConflictError("A different result was already accepted for this job.")
+
+    worker = NetworkWorker(_ConflictingClient(), lambda job: None)
+    worker._active_job = {"id": "job-conflict", "lease_token": "lease-conflict"}
+    result = {"status": "completed"}
+    assert worker.submit_result("job-conflict", result)
+
+    worker._flush_results()
+
+    assert len(worker._result_conflicts) == 1
+    assert worker._result_conflicts[0][0:2] == ("job-conflict", result)
+    assert worker._active_job is None
+    assert worker.can_accept_result() is False
+    assert "MotionLab result conflict" in caplog.text
+
+
 def test_connector_heartbeat_sends_idle_and_active_payloads():
     client = ConnectorClient("https://motionlab.example", "token")
     calls = []
-    client._request = lambda method, path, payload=None: (
+    client._request = lambda method, path, payload=None, **_kwargs: (
         calls.append((method, path, payload)) or {"ok": True}
     )
 
